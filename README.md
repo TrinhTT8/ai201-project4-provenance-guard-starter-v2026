@@ -38,7 +38,19 @@
 
 <!-- The path a submission takes, from arriving to the label a reader sees.
      Six or seven steps — this is the trace you wrote in Milestone 1. -->
+Step 1: The text arrives as the JSON body of an HTTP request. It's sent to `POST /submit` with `text` and `creator_id`. The route in `app.py` pulls those two fields out of the request.
 
+Step 2: `detector.py::model_signal` reads in the text and scores how predictable it is, giving a model score from 0 to 1 (higher means more likely AI).
+
+Step 3: `stylometry.py::style_signal` analyzes the text's shape and gives it a style score from 0 to 1 as well (higher means more likely AI).
+
+Step 4: `scoring.py::combine_signals` combines the scores of step 2 and 3 into one score.
+
+Step 5: Based on the combined score, `scoring.py::score_to_label` guesses whether the text was written by AI or a human. If the score falls in the middle, it guesses unsure. It also produces the label sentence a reader will see.
+
+Step 6: `audit.py::log_decision` saves the guess, the combined score and both signal scores to the audit log, under a new `content_id`.
+
+Step 7: The route returns a JSON response to the writer with the `content_id`, guess, confidence, label and both signal scores. The writer needs the `content_id` if they want to appeal.
 
 
 ---
@@ -53,19 +65,19 @@
 
 ### Signal one — the model signal
 
-**What it measures:**
+**What it measures:** This signal measures how predictable the input text is to a local language model (GPT-2). This is called perplexity: low perplexity means the model could have guessed the text, and high perplexity means the text surprised it. `detector.py::model_signal` turns that into a 0–1 score where higher means more likely AI.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** Language models are built to predict the most likely next word, so text a model wrote tends to be text a model finds easy to predict. Human texts are more unpredictable. For instance, human texts can have sharp changes and odd word choices, and different people write with the words and tone they're used to.
 
-**What it can't see:**
+**What it can't see:** Predictability is not the same thing as authorship. If a human writes simply, using common words in short, ordinary sentences, the text is predictable and scores as AI. That includes someone writing in a second language, a younger writer, or anyone writing plainly on purpose. These are the writers this signal is most likely to accuse falsely. Going the other way, dense writing full of rare words can score as human even if AI wrote it. Very short texts are also hard to judge, because there's too little to be surprised by.
 
 ### Signal two — the style signal
 
-**What it measures:**
+**What it measures:** This signal measures the shape of the text without reading it: how much sentence lengths vary, how varied the vocabulary is (unique words over total words), and how much punctuation is used. `stylometry.py::style_signal` combines these into a 0–1 score where higher means more likely AI.
 
-**Why that might differ between human and AI writing:**
+**Why that might differ between human and AI writing:** Human writing is less repetitive and more uneven. A short sentence can sit next to a very long one, some texts contain a lot more punctuation, and some of it isn't placed by the rules. AI writing follows a pattern: sentence length, punctuation and vocabulary are more even and limited, because picking the most likely next word produces average, mid-length sentences. AI also tends to use a narrower vocabulary than humans.
 
-**What it can't see:**
+**What it can't see:** This signal can't read the text. It doesn't judge the meaning, so anything that changes the shape without changing the meaning moves the score. Adding typos, breaking up sentences or pasting in a quotation can make AI text look human without changing what it says.
 
 ### The combining rule
 
