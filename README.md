@@ -84,9 +84,9 @@ Step 7: The route returns a JSON response to the writer with the `content_id`, g
 <!-- Write the rule in words, then give the numbers. What happens when the two
      signals disagree? -->
 
-**The rule:**
+**The rule:** Scores from `detector.py` (signal one) and `stylometry.py` (signal two) are averaged with equal 50/50 weights, so neither signal overrules the other. Both carry useful information and both have blind spots. There's one exception: if the two scores are 0.30 or more apart, the signals are contradicting each other, so the combined score is set to 0.5 (unsure) instead of the average. A split vote should never be enough to accuse someone.
 
-**The numbers:**
+**The numbers:** `WEIGHT_MODEL_SIGNAL = 0.5`, `WEIGHT_STYLE_SIGNAL = 0.5`, `DISAGREEMENT_GAP = 0.30`
 
 **Where it lives:** `scoring.py::combine_signals`
 
@@ -94,6 +94,7 @@ Step 7: The route returns a JSON response to the writer with the `content_id`, g
      somewhere else, say where. -->
 
 **A case where my two signals split, and what my rule does with it:**
+I took an AI-written paragraph about time management and lightly edited it: casual words, a couple of very short sentences, an exclamation mark. Signal one scored it 0.68 (AI-ish), because the word choices were still predictable. Signal two scored it 0.37 (human-ish), because the short sentences and extra punctuation made its shape look human. The gap is 0.31, over my 0.30 limit, so the rule sets the combined score to 0.5 (unsure) instead of the plain average of 0.53. The label is the same either way, but the rule makes the reason explicit: the signals disagree, so the system doesn't guess.
 
 ---
 

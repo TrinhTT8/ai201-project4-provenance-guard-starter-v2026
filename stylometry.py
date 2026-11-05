@@ -63,9 +63,19 @@ def sentence_length_spread(text: str) -> float:
     Watch the edge case: a one-sentence submission has no spread at all, and
     `stdev` raises on fewer than two values. Decide what that should return
     before the attack set decides for you.
+
+    Mine: standard deviation of words-per-sentence divided by the mean.
+    Roughly 0.0 (every sentence the same length) to 1.0+ (very lumpy).
+    HIGHER means more human. Fewer than two sentences returns 0.0, and
+    `style_signal` treats that case as neutral rather than as AI.
     """
-    # TODO: replace this
-    return 0.0
+    lengths = [len(words(s)) for s in sentences(text)]
+    lengths = [n for n in lengths if n > 0]
+    if len(lengths) < 2:
+        return 0.0
+
+    mean = statistics.mean(lengths)
+    return round(statistics.stdev(lengths) / mean, 4)
 
 
 def type_token_ratio(text: str) -> float:
@@ -79,9 +89,13 @@ def type_token_ratio(text: str) -> float:
     longer, because common words repeat. Two texts of different lengths aren't
     directly comparable on it, and if your test inputs vary a lot in length,
     that alone can look like a signal.
+
+    HIGHER means more human. No words at all returns 0.0.
     """
-    # TODO: replace this
-    return 0.0
+    all_words = words(text)
+    if not all_words:
+        return 0.0
+    return round(len(set(all_words)) / len(all_words), 4)
 
 
 def punctuation_density(text: str) -> float:
@@ -93,9 +107,16 @@ def punctuation_density(text: str) -> float:
         semicolons, dashes — is a real choice. Semicolons and em dashes are
         more interesting than full stops, because they vary more between
         writers.
+
+    Mine: everything except full stops and apostrophes, per word. Full stops
+    are in every text; apostrophes are mostly contractions, not punctuation
+    choices. HIGHER means more human. No words at all returns 0.0.
     """
-    # TODO: replace this
-    return 0.0
+    all_words = words(text)
+    if not all_words:
+        return 0.0
+    marks = re.findall(r"[,;:!?()\"—–…-]", text)
+    return round(len(marks) / len(all_words), 4)
 
 
 # ── Combining them ───────────────────────────────────────────────────────────
@@ -121,9 +142,37 @@ def style_signal(text: str) -> float:
     clearly human, plain conventional human writing, lightly-edited AI — before
     you trust it. Plain and ordinary, not formal: formal prose reads as *human*
     to signal one, and it is plain writing that gets accused.
+
+    Mine: each measure is put on a 0–1 "AI-ish" scale between two anchors —
+    the value that looks fully AI and the value that looks fully human — then
+    the three are averaged with equal weight. All three measures run "higher
+    is more human", so `_ai_ish` flips them. The anchors are first guesses;
+    move them once you've seen the calibration inputs.
     """
-    # TODO: replace this
-    return 0.5
+    parts = [
+        _ai_ish(type_token_ratio(text), *TTR_ANCHORS),
+        _ai_ish(punctuation_density(text), *PUNCT_ANCHORS),
+    ]
+
+    # One sentence has no spread to measure. Count it as neutral, not as AI.
+    if len([s for s in sentences(text) if words(s)]) >= 2:
+        parts.append(_ai_ish(sentence_length_spread(text), *SPREAD_ANCHORS))
+    else:
+        parts.append(0.5)
+
+    return round(sum(parts) / len(parts), 4)
+
+
+# (value that looks fully AI, value that looks fully human)
+SPREAD_ANCHORS = (0.20, 0.70)
+TTR_ANCHORS = (0.50, 0.80)
+PUNCT_ANCHORS = (0.04, 0.15)
+
+
+def _ai_ish(value: float, ai_end: float, human_end: float) -> float:
+    """Place a measure on 0 (human end) to 1 (AI end), clamped at both ends."""
+    position = (value - human_end) / (ai_end - human_end)
+    return min(max(position, 0.0), 1.0)
 
 
 if __name__ == "__main__":

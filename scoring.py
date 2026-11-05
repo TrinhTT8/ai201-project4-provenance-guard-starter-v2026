@@ -51,12 +51,24 @@ def combine_signals(model_score: float, style_score: float) -> float:
 
     The weights in config.py are placeholders. Change them, or ignore them and
     write a different rule.
+
+    My rule: a 50/50 average (weights in config.py). Both signals carry real
+    information and both have blind spots, so neither one gets to overrule the
+    other.
+
+    Plus one disagreement rule: if the two signals are DISAGREEMENT_GAP or
+    more apart, the score is 0.5 — the middle of "unsure". Otherwise one very
+    confident signal can drag the average over the AI line while the other
+    signal says human, and a split vote shouldn't accuse anyone.
     """
-    # TODO: replace this
-    return (
+    if abs(model_score - style_score) >= config.DISAGREEMENT_GAP:
+        return 0.5
+
+    score = (
         config.WEIGHT_MODEL_SIGNAL * model_score
         + config.WEIGHT_STYLE_SIGNAL * style_score
     )
+    return round(min(max(score, 0.0), 1.0), 4)
 
 
 def score_to_label(score: float) -> tuple[str, str]:

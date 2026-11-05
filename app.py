@@ -30,6 +30,8 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import scoring
+import stylometry
 
 app = Flask(__name__)
 
@@ -228,9 +230,11 @@ def submit():
             "message": "The model isn't loaded. Run `python detector.py` once to download it.",
         }), 503
 
-    # Placeholders until Milestones 4 and 5
-    style_score = None
-    combined_score = model_score
+    # ── Signal two, then combine ─────────────────────────────────────────────
+    style_score = stylometry.style_signal(text)
+    combined_score = scoring.combine_signals(model_score, style_score)
+
+    # Placeholders until Milestone 5
     guess = None
     label = "PLACEHOLDER — labels come in Milestone 5."
 

@@ -54,8 +54,14 @@ DETECTOR_MAX_TOKENS = 400
 # down BEFORE you code it, and to put the numbers in your README. Whatever you
 # decide, it goes here.
 
+# My choice: equal weights. Both signals matter and both have blind spots.
 WEIGHT_MODEL_SIGNAL = 0.5
 WEIGHT_STYLE_SIGNAL = 0.5
+
+# When the two signals are this far apart, they're contradicting each other,
+# and the combined score goes to 0.5 (unsure) instead of the average. A split
+# vote should never be enough to accuse someone.
+DISAGREEMENT_GAP = 0.30
 
 
 # ─── Thresholds (Milestone 5) ────────────────────────────────────────────────
