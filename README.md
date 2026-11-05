@@ -105,13 +105,13 @@ I took an AI-written paragraph about time management and lightly edited it: casu
 
      Write them for someone who has never heard the word "threshold". -->
 
-| Label                 | Score range | The exact text a reader sees |
-| --------------------- | ----------- | ---------------------------- |
-| high-confidence human |             |                              |
-| unsure                |             |                              |
-| high-confidence AI    |             |                              |
+| Label                 | Score range | The exact text a reader sees                                                                                                                                                                                                                                                    |
+| --------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| high-confidence human | 0.00 -0.35  | We think this was probably written by a person.                                                                                                                                                                                                                                 |
+| unsure                | 0.35 - 0.65 | We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it. |
+| high-confidence AI    | 0.65 - 1.00 | This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.                                                               |
 
-**Why I worded the "unsure" one this way:**
+**Why I worded the "unsure" one this way:** I want the message to acknowledge that the system can be wrong because the person may have written every word themselves, yet their writing can still look similar to AI writing. It's important that in these cases, we don't accuse the writer but let them have a chance to appeal and understand the reasons why their text was labelled as unsure.
 
 <!-- It's the hardest of the three. It has to admit uncertainty without
      sounding like an accusation, because the person reading it may well have
@@ -153,11 +153,17 @@ $ curl -X POST http://127.0.0.1:5000/submit \
 ```bash
 $ curl -X POST http://127.0.0.1:5000/appeal \
   -H "Content-Type: application/json" \
-  -d '{"content_id": "...", "reasoning": "..."}'
+  -d '{"content_id": "c5a9e990-ceb9-43dc-8d6c-7616d1ca9dbc",
+  "reasoning": "I wrote this myself for a study skills class. I didn''t use any AI tools."}'
 ```
 
 ```json
-
+{
+  "content_id": "c5a9e990-ceb9-43dc-8d6c-7616d1ca9dbc",
+  "message": "Thanks. Your appeal has been recorded, and a person will review this decision.",
+  "original_guess": "ai",
+  "status": "under_review"
+}
 ```
 
 **What the log shows afterwards**
@@ -171,29 +177,34 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
   "count": 3,
   "entries": [
     {
-      "combined_score": 0.6521,
-      "content_id": "2de372b7-07ed-4fe2-a2fe-b0dbe7d027b1",
-      "creator_id": "me",
-      "guess": null,
-      "label": "PLACEHOLDER \u2014 labels come in Milestone 5.",
-      "model_score": 0.6521,
+      "combined_score": 0.6425,
+      "content_id": "5fd4b842-0f89-46f6-b562-0bb6c13a1f49",
+      "creator_id": "test-unsure",
+      "guess": "unsure",
+      "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written.",
+      "model_score": 0.6406,
       "status": "decided",
-      "style_score": null,
-      "timestamp": "2026-11-05T02:14:10+00:00"
+      "style_score": 0.6444,
+      "timestamp": "2026-11-05T05:11:42+00:00"
     },
     {
-      "creator_id": "unknown",
-      "event": "rejected",
-      "reason": "text_too_short",
-      "status": "rejected",
-      "timestamp": "2026-11-05T02:14:43+00:00"
+      "combined_score": 0.6935,
+      "content_id": "c5a9e990-ceb9-43dc-8d6c-7616d1ca9dbc",
+      "creator_id": "test-ai",
+      "guess": "ai",
+      "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+      "model_score": 0.8323,
+      "status": "decided",
+      "style_score": 0.5548,
+      "timestamp": "2026-11-05T05:11:50+00:00"
     },
     {
-      "creator_id": "me",
-      "event": "rejected",
-      "reason": "missing_text",
-      "status": "rejected",
-      "timestamp": "2026-11-05T02:15:25+00:00"
+      "content_id": "c5a9e990-ceb9-43dc-8d6c-7616d1ca9dbc",
+      "creator_id": "test-ai",
+      "event": "appeal",
+      "reasoning": "I wrote this myself for a study skills class. I didn't use any AI tools.",
+      "status": "under_review",
+      "timestamp": "2026-11-05T19:51:28+00:00"
     }
   ]
 }
