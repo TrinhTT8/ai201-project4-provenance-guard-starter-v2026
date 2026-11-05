@@ -44,24 +44,17 @@ Two things worth knowing before you pick numbers:
 ---
 ## 1.
 
-<!-- Your criterion. It must name a number. -->
+At most 1 out of 10 human-written pieces is labelled high-confidence AI, in every trial.
 
-
-
-**Why this target:**
-
-
+**Why this target:** On a writing site, wrongly accusing a real writer costs that person far more than a missed AI text costs the site. Both signals have blind spots, especially signal one with plain, simple writing, so zero mistakes isn't realistic. But false accusations should be rare, so I allow at most 1 in 10.
 
 ---
 
 ## 2.
 
-<!-- Your criterion. -->
+An appeal on a real `content_id` gets recorded in the audit log and its status changes to `under_review` in 5 out of 5 tries. An appeal on a `content_id` that doesn't exist returns an error and records nothing, in 5 out of 5 tries.
 
-
-
-**Why this target:**
-
+**Why this target:** This is a mandatory process that doesn't rely on the AI prediction. All appeals are expected to be recorded and given a status as they come in. An appeal is the only thing standing between a wrong accusation and nothing at all, so it can't fail silently, and a typo in the `content_id` has to tell the writer something went wrong.
 
 
 ---
@@ -69,10 +62,10 @@ Two things worth knowing before you pick numbers:
 ## 3.
 
 <!-- Your criterion. -->
+At least 4 of 5 clearly-AI texts score above 0.65, and at least 4 of 5 clearly-human texts score below 0.35, in every trial.
 
 
-
-**Why this target:**
+**Why this target:** The unsure range is 0.30 wide (from 0.35 to 0.65), so clearly-AI and clearly-human text need to be at least that far apart for the system to actually tell them apart. If fewer than 80% (4 of 5) land on the correct side, our signals aren't separating them well enough and need tightening.
 
 
 
@@ -80,11 +73,10 @@ Two things worth knowing before you pick numbers:
 
 ## 4.
 
-<!-- Your criterion. -->
+Of my 5 test texts (2 clearly human, 2 clearly AI, 1 borderline), no more than 2 are labelled unsure, in every trial.
 
 
-
-**Why this target:**
+**Why this target:** Only 1 of the 5 texts is genuinely borderline, so it's the only one that should land in unsure. I allow 1 extra for the signals' blind spots. If 3 or more (60%) are unsure, the system isn't making clear judgements, which usually means one signal isn't varying enough.
 
 
 
@@ -93,11 +85,11 @@ Two things worth knowing before you pick numbers:
 ## 5.
 
 <!-- Your criterion. -->
-
+When `text` is missing, empty, or over 1000 words, `/submit` returns a 400 error with a message explaining the problem, never a 500 crash and never a score, in 5 out of 5 cases.
 
 
 **Why this target:**
-
+If there is no given text, the system cannot predict; therefore, this criterion makes sure no empty text is being passed through and scored. Enormous text is a common way to break or slow down a service, so it gets rejected the same way. The writer should always get a clear message instead of a crash.
 
 
 ---
