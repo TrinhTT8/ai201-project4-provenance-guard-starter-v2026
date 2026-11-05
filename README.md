@@ -38,6 +38,7 @@
 
 <!-- The path a submission takes, from arriving to the label a reader sees.
      Six or seven steps — this is the trace you wrote in Milestone 1. -->
+
 Step 1: The text arrives as the JSON body of an HTTP request. It's sent to `POST /submit` with `text` and `creator_id`. The route in `app.py` pulls those two fields out of the request.
 
 Step 2: `detector.py::model_signal` reads in the text and scores how predictable it is, giving a model score from 0 to 1 (higher means more likely AI).
@@ -51,7 +52,6 @@ Step 5: Based on the combined score, `scoring.py::score_to_label` guesses whethe
 Step 6: `audit.py::log_decision` saves the guess, the combined score and both signal scores to the audit log, under a new `content_id`.
 
 Step 7: The route returns a JSON response to the writer with the `content_id`, guess, confidence, label and both signal scores. The writer needs the `content_id` if they want to appeal.
-
 
 ---
 
@@ -95,8 +95,6 @@ Step 7: The route returns a JSON response to the writer with the `content_id`, g
 
 **A case where my two signals split, and what my rule does with it:**
 
-
-
 ---
 
 ## Label Variants
@@ -106,18 +104,17 @@ Step 7: The route returns a JSON response to the writer with the `content_id`, g
 
      Write them for someone who has never heard the word "threshold". -->
 
-| Label | Score range | The exact text a reader sees |
-|---|---|---|
-| high-confidence human |  |  |
-| unsure |  |  |
-| high-confidence AI |  |  |
+| Label                 | Score range | The exact text a reader sees |
+| --------------------- | ----------- | ---------------------------- |
+| high-confidence human |             |                              |
+| unsure                |             |                              |
+| high-confidence AI    |             |                              |
 
 **Why I worded the "unsure" one this way:**
+
 <!-- It's the hardest of the three. It has to admit uncertainty without
      sounding like an accusation, because the person reading it may well have
      written every word themselves. -->
-
-
 
 ---
 
@@ -136,11 +133,18 @@ Step 7: The route returns a JSON response to the writer with the `content_id`, g
 ```bash
 $ curl -X POST http://127.0.0.1:5000/submit \
   -H "Content-Type: application/json" \
-  -d '{"text": "...", "creator_id": "..."}'
+  -d '{"text": "My favorite ice cream flavor is cookies and cream. The ice cream shop near my house sells the best cookie and cream flavor ever! I go back all the time!", "creator_id": "me"}'
 ```
 
 ```json
-
+{
+  "confidence": 0.6521,
+  "content_id": "2de372b7-07ed-4fe2-a2fe-b0dbe7d027b1",
+  "guess": null,
+  "label": "PLACEHOLDER \u2014 labels come in Milestone 5.",
+  "model_score": 0.6521,
+  "style_score": null
+}
 ```
 
 **An appeal**
@@ -162,7 +166,36 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 ```
 
 ```json
-
+{
+  "count": 3,
+  "entries": [
+    {
+      "combined_score": 0.6521,
+      "content_id": "2de372b7-07ed-4fe2-a2fe-b0dbe7d027b1",
+      "creator_id": "me",
+      "guess": null,
+      "label": "PLACEHOLDER \u2014 labels come in Milestone 5.",
+      "model_score": 0.6521,
+      "status": "decided",
+      "style_score": null,
+      "timestamp": "2026-11-05T02:14:10+00:00"
+    },
+    {
+      "creator_id": "unknown",
+      "event": "rejected",
+      "reason": "text_too_short",
+      "status": "rejected",
+      "timestamp": "2026-11-05T02:14:43+00:00"
+    },
+    {
+      "creator_id": "me",
+      "event": "rejected",
+      "reason": "missing_text",
+      "status": "rejected",
+      "timestamp": "2026-11-05T02:15:25+00:00"
+    }
+  ]
+}
 ```
 
 ---
@@ -171,15 +204,15 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 
 **Moment 1**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- _What I asked for:_
+- _What came back:_
+- _What I changed:_
 
 **Moment 2**
 
-- *What I asked for:*
-- *What came back:*
-- *What I changed:*
+- _What I asked for:_
+- _What came back:_
+- _What I changed:_
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
@@ -187,9 +220,10 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 
 ## Rate Limiting
 
-**My limits:** ___ per minute, ___ per day
+**My limits:** **_ per minute, _** per day
 
 **Why those numbers and not others:**
+
 <!-- Think about two people: a real writer submitting their own work a few
      times an hour, and a script sending a thousand variations to map your
      thresholds. Your numbers have to be liveable for the first and hostile to
@@ -214,8 +248,6 @@ can look like one. -->
 <!-- Every attack with its outcome and a held-or-broke mark.
      `run_attacks.py --label before` produces the table. -->
 
-
-
 **Ten audit log entries from the run**
 
 <!-- Choose entries that show the interesting failures, not the ten easiest. -->
@@ -227,8 +259,6 @@ can look like one. -->
 **The single worst outcome** — the one I'd least want to explain to a writer
 whose work got caught by it:
 
-
-
 ---
 
 ## Run Log and Verdicts
@@ -236,12 +266,12 @@ whose work got caught by it:
 <!-- Your five criteria across three trials. `run_eval.py --label before`. -->
 
 | Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
-|---|---|---|---|---|---|
-| 1.  |  |  |  |  |  |
-| 2.  |  |  |  |  |  |
-| 3.  |  |  |  |  |  |
-| 4.  |  |  |  |  |  |
-| 5.  |  |  |  |  |  |
+| --------- | ------ | ----- | ----- | ----- | ------- |
+| 1.        |        |       |       |       |         |
+| 2.        |        |       |       |       |         |
+| 3.        |        |       |       |       |         |
+| 4.        |        |       |       |       |         |
+| 5.        |        |       |       |       |         |
 
 **Real output from one trial**, pasted as text, naming the file and function
 that produced it:
@@ -266,8 +296,6 @@ that produced it:
 
      Look for a pattern. Five failures on one signal is one problem, not five. -->
 
-
-
 ---
 
 ## The Improvement
@@ -280,14 +308,10 @@ that produced it:
 
 <!-- Same format. `run_attacks.py --label after` -->
 
-
-
 **Did it help, and how do I know:**
 
 <!-- Widening the unsure band usually fixes one problem and creates another.
      Reporting that trade honestly is worth full credit. -->
-
-
 
 ---
 
@@ -296,14 +320,10 @@ that produced it:
 <!-- For each attack still getting through and each criterion still missed:
      what you'd do, and why you stopped. -->
 
-
-
 **The trade I'd make if this ran for real:**
 
 <!-- Two sentences. Fewer wrong accusations means more AI text getting through.
      Say which way you'd go and WHO PAYS FOR IT. -->
-
-
 
 <!-- ═════════════════════════════════════════════════════════════════════
 
