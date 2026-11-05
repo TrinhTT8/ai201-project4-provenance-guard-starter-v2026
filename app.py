@@ -153,7 +153,7 @@ def health():
 # ── YOU BUILD THIS ────────────────────────────────────────────────────────────
 
 @app.post("/submit")
-# @limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
+@limiter.limit(f"{config.RATE_LIMIT_PER_MINUTE}/minute;{config.RATE_LIMIT_PER_DAY}/day")
 def submit():
     """
     Take a piece of text, decide about it, log the decision, answer.
@@ -225,10 +225,8 @@ def submit():
     except ValueError:
         return _reject(creator_id, "text_too_short", "Text is too short to score — a few sentences at least.")
     except detector.DetectorUnavailable:
-        return jsonify({
-            "error": "detector_unavailable",
-            "message": "The model isn't loaded. Run `python detector.py` once to download it.",
-        }), 503
+        return _reject(creator_id, "detector_unavailable",
+                       "The model isn't loaded. Run `python detector.py` once to download it.", 503)
 
     # ── Signal two, then combine ─────────────────────────────────────────────
     style_score = stylometry.style_signal(text)
@@ -262,10 +260,10 @@ def submit():
 MAX_WORDS = 1000
 
 
-def _reject(creator_id, reason, message):
-    """Refuse a request with a 400, and leave a trace of it in the log."""
-    audit.log_rejection(creator_id=creator_id, reason=reason)
-    return jsonify({"error": reason, "message": message}), 400
+def _reject(creator_id, reason, message, status=400, **extra):
+    """Refuse a request, and leave a trace of it in the log."""
+    audit.log_rejection(creator_id=creator_id, reason=reason, route=request.path, **extra)
+    return jsonify({"error": reason, "message": message}), status
 
 
 @app.post("/appeal")
@@ -294,26 +292,24 @@ def appeal():
 
     content_id = payload.get("content_id")
     reasoning = payload.get("reasoning")
+    caller = payload.get("creator_id") if isinstance(payload.get("creator_id"), str) else "unknown"
 
     if not isinstance(content_id, str) or not content_id.strip():
-        return jsonify({
-            "error": "missing_content_id",
-            "message": "Send the content_id from your submission's response.",
-        }), 400
+        return _reject(caller, "missing_content_id",
+                       "Send the content_id from your submission's response.")
     if not isinstance(reasoning, str) or not reasoning.strip():
-        return jsonify({
-            "error": "missing_reasoning",
-            "message": "Tell us why you think the label is wrong.",
-        }), 400
+        return _reject(caller, "missing_reasoning",
+                       "Tell us why you think the label is wrong.")
 
     # ── The id has to point at a real decision (criterion 2) ─────────────────
+    # Logged as attempted_content_id, not content_id, so a bad guess never
+    # shows up as part of a real item's history.
     content_id = content_id.strip()
     decisions = [e for e in audit.entries_for(content_id) if e.get("status") == "decided"]
     if not decisions:
-        return jsonify({
-            "error": "unknown_content_id",
-            "message": f"No submission found with content_id {content_id}. Check it was copied exactly.",
-        }), 404
+        return _reject(caller, "unknown_content_id",
+                       f"No submission found with content_id {content_id}. Check it was copied exactly.",
+                       404, attempted_content_id=content_id)
 
     # The appeal sits after the original decision; nothing is overwritten.
     original = decisions[0]
