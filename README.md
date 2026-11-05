@@ -216,15 +216,15 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 
 **Moment 1**
 
-- _What I asked for:_
-- _What came back:_
-- _What I changed:_
+- _What I asked for:_ I have used Claude to help critic my criteria. 
+- _What came back:_ It suggested to me that my first 3 criteria were weak and that they will never passed due to the wording. 
+- _What I changed:_ I went back and reworded my criteria and added more specific numbers such as # out of # times, # of AI labels, # of human labels, etc. 
 
 **Moment 2**
 
-- _What I asked for:_
-- _What came back:_
-- _What I changed:_
+- _What I asked for:_ I asked Claude to help me to finish `detector.py` and `stylometry.py` files.
+- _What came back:_ It filled in the functions within two files and explained the code that it had written.
+- _What I changed:_ I read all the code that it generated, and added in comments so I could understand them better. 
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
