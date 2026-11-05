@@ -199,17 +199,70 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
-    payload = request.get_json(silent=True) or {}
+    import detector
 
-    # TODO: delete this and build the route.
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        payload = {}
+
+    # ── Pull out the two fields ──────────────────────────────────────────────
+    text = payload.get("text")
+    creator_id = payload.get("creator_id")
+    if not isinstance(creator_id, str) or not creator_id.strip():
+        creator_id = "unknown"
+
+    # ── Bad input gets a 400, never a crash (criterion 5) ────────────────────
+    if not isinstance(text, str) or not text.strip():
+        return _reject(creator_id, "missing_text", "Send some text in the \"text\" field.")
+    if len(text.split()) > MAX_WORDS:
+        return _reject(creator_id, "text_too_long", f"Text is over {MAX_WORDS} words.")
+
+    # ── Signal one ───────────────────────────────────────────────────────────
+    try:
+        model_score = detector.model_signal(text)
+    except ValueError:
+        return _reject(creator_id, "text_too_short", "Text is too short to score — a few sentences at least.")
+    except detector.DetectorUnavailable:
+        return jsonify({
+            "error": "detector_unavailable",
+            "message": "The model isn't loaded. Run `python detector.py` once to download it.",
+        }), 503
+
+    # Placeholders until Milestones 4 and 5
+    style_score = None
+    combined_score = model_score
+    guess = None
+    label = "PLACEHOLDER — labels come in Milestone 5."
+
+    # ── Log it. The content_id is what /appeal looks up later ────────────────
+    content_id = str(uuid.uuid4())
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined_score,
+        label=label,
+    )
+
     return jsonify({
-        "error": "not_implemented",
-        "message": "POST /submit isn't built yet — see the TODO in app.py.",
-        "you_sent": {
-            "text_length": len(payload.get("text", "")),
-            "creator_id": payload.get("creator_id"),
-        },
-    }), 501
+        "content_id": content_id,
+        "guess": guess,
+        "confidence": combined_score,
+        "label": label,
+        "model_score": model_score,
+        "style_score": style_score,
+    })
+
+
+MAX_WORDS = 1000
+
+
+def _reject(creator_id, reason, message):
+    """Refuse a request with a 400, and leave a trace of it in the log."""
+    audit.log_rejection(creator_id=creator_id, reason=reason)
+    return jsonify({"error": reason, "message": message}), 400
 
 
 @app.post("/appeal")
