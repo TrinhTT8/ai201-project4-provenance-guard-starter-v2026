@@ -216,15 +216,15 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 
 **Moment 1**
 
-- _What I asked for:_ I have used Claude to help critic my criteria. 
-- _What came back:_ It suggested to me that my first 3 criteria were weak and that they will never passed due to the wording. 
-- _What I changed:_ I went back and reworded my criteria and added more specific numbers such as # out of # times, # of AI labels, # of human labels, etc. 
+- _What I asked for:_ I have used Claude to help critic my criteria.
+- _What came back:_ It suggested to me that my first 3 criteria were weak and that they will never passed due to the wording.
+- _What I changed:_ I went back and reworded my criteria and added more specific numbers such as # out of # times, # of AI labels, # of human labels, etc.
 
 **Moment 2**
 
 - _What I asked for:_ I asked Claude to help me to finish `detector.py` and `stylometry.py` files.
 - _What came back:_ It filled in the functions within two files and explained the code that it had written.
-- _What I changed:_ I read all the code that it generated, and added in comments so I could understand them better. 
+- _What I changed:_ I read all the code that it generated, and added in comments so I could understand them better.
 
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
@@ -246,7 +246,8 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 **The run of status codes when I pushed past it:**
 
 <!-- python run_attacks.py --flood 15 -->
-I have ran `run_attacks.py` once before flooding it with 15 more requests. Therefore, you will see the cut off is at request 4 and not 5. 
+
+I have ran `run_attacks.py` once before flooding it with 15 more requests. Therefore, you will see the cut off is at request 4 and not 5.
 
 ```
 15 submissions as 'flood_tester' against http://127.0.0.1:5000
@@ -284,14 +285,168 @@ The first one is slow while the model loads.
 
 <!-- Choose entries that show the interesting failures, not the ten easiest. -->
 
-```json
+**1. EV01 · evasion · typos raise word variety**
 
+```json
+{
+  "timestamp": "2026-11-05T21:02:56+00:00",
+  "content_id": "d23fa7cf-ef8c-4055-a364-c39e3e6ee599",
+  "creator_id": "attacker_EV01",
+  "guess": "unsure",
+  "model_score": 0.1635,
+  "style_score": 0.6452,
+  "combined_score": 0.5,
+  "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it.",
+  "status": "decided"
+}
 ```
 
-**The single worst outcome** — the one I'd least want to explain to a writer
-whose work got caught by it:
+**2. EV05 · evasion · heavy human editing pass**
 
----
+```json
+{
+  "timestamp": "2026-11-05T21:02:57+00:00",
+  "content_id": "d4834c1e-a7d9-4553-bc5a-2ea0565d31f7",
+  "creator_id": "attacker_EV05",
+  "guess": "human",
+  "model_score": 0.3212,
+  "style_score": 0.2474,
+  "combined_score": 0.2843,
+  "label": "We think this was probably written by a person.",
+  "status": "decided"
+}
+```
+
+**3. EV10 · evasion · repeated stanza structure**
+
+```json
+{
+  "timestamp": "2026-11-05T21:02:58+00:00",
+  "content_id": "d215aa9e-cbea-49f6-a24d-10f670f35cbb",
+  "creator_id": "attacker_EV10",
+  "guess": "ai",
+  "model_score": 0.9792,
+  "style_score": 0.8707,
+  "combined_score": 0.9249,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**4. FP03 · false positive · a non-native English speaker writing carefully**
+
+```json
+{
+  "timestamp": "2026-11-05T21:02:59+00:00",
+  "content_id": "af9d5ef3-1d34-423f-b8c7-1946766ec7a9",
+  "creator_id": "attacker_FP03",
+  "guess": "ai",
+  "model_score": 0.8051,
+  "style_score": 0.6669,
+  "combined_score": 0.736,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**5. FP05 · false positive · technical documentation written by a person**
+
+```json
+{
+  "timestamp": "2026-11-05T21:02:59+00:00",
+  "content_id": "6af0a137-c747-42ea-9a75-ec186a686065",
+  "creator_id": "attacker_FP05",
+  "guess": "ai",
+  "model_score": 0.8005,
+  "style_score": 0.8535,
+  "combined_score": 0.827,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**6. FP07 · false positive · human writing that repeats a phrase deliberately**
+
+```json
+{
+  "timestamp": "2026-11-05T21:03:00+00:00",
+  "content_id": "754142d2-9d25-417c-be46-caf70f2985eb",
+  "creator_id": "attacker_FP07",
+  "guess": "ai",
+  "model_score": 0.8816,
+  "style_score": 0.6667,
+  "combined_score": 0.7742,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**7. PI02 · prompt injection · instruction disguised as a system message**
+
+```json
+{
+  "timestamp": "2026-11-05T21:03:00+00:00",
+  "content_id": "454b2d2e-6b76-4e39-9c04-28035ef52af2",
+  "creator_id": "attacker_PI02",
+  "guess": "human",
+  "model_score": 0.2044,
+  "style_score": 0.3521,
+  "combined_score": 0.2782,
+  "label": "We think this was probably written by a person.",
+  "status": "decided"
+}
+```
+
+**8. MF06 · malformed · text is emoji only**
+
+```json
+{
+  "timestamp": "2026-11-05T21:03:02+00:00",
+  "content_id": "045673ea-12f0-4856-be57-cc8a0aeff746",
+  "creator_id": "attacker_MF06",
+  "guess": "ai",
+  "model_score": 0.9969,
+  "style_score": 0.8333,
+  "combined_score": 0.9151,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**9. MF07 · malformed · text is right-to-left script**
+
+```json
+{
+  "timestamp": "2026-11-05T21:03:02+00:00",
+  "content_id": "60efe6a7-3bd5-443b-83f6-aa6fcfef9e57",
+  "creator_id": "attacker_MF07",
+  "guess": "ai",
+  "model_score": 0.9064,
+  "style_score": 0.8333,
+  "combined_score": 0.8699,
+  "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+  "status": "decided"
+}
+```
+
+**10. FL01 · flood · 20 rapid submissions from one creator (rejected by the rate limit)**
+
+```json
+{
+  "timestamp": "2026-11-05T21:03:03+00:00",
+  "creator_id": "attacker_flood",
+  "event": "rejected",
+  "status": "rejected",
+  "reason": "rate_limited",
+  "limit": "5 per 1 minute"
+}
+```
+
+**The single worst outcome:** FP03, a non-native English speaker writing carefully.
+
+I chose FP03 because the system has no guardrails for people writing in a second language.
+
+This is the outcome I'd least want to explain, because this writer did everything right. They wrote carefully, and that care is what got them accused. They may also be the person least confident about arguing back in English, so the appeal path is weakest exactly where it's needed most. It's the false positive I traced in Milestone 1, showing up exactly as predicted.
 
 ## Run Log and Verdicts
 
