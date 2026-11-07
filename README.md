@@ -454,17 +454,67 @@ This is the outcome I'd least want to explain, because this writer did everythin
 
 | Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
 | --------- | ------ | ----- | ----- | ----- | ------- |
-| 1.        |        |       |       |       |         |
-| 2.        |        |       |       |       |         |
-| 3.        |        |       |       |       |         |
-| 4.        |        |       |       |       |         |
-| 5.        |        |       |       |       |         |
+| 1. False positives on my own writing | At most 1 of 10 labelled high-confidence AI | 4 of 10 AI | 4 of 10 AI | 4 of 10 AI | **MISS** |
+| 2. Appeal path | 5 of 5 appeals on a real `content_id` recorded as `under_review`; 5 of 5 on a fake one return an error | Real ID 5/5 → `under_review`; fake ID 5/5 → `404 unknown_content_id` | *(by hand, one run)* | *(by hand, one run)* | **PASS** |
+| 3. Score spread | At least 4 of 5 clearly-AI above 0.65 and at least 4 of 5 clearly-human below 0.35 | AI 5/5, human 0/5 | AI 5/5, human 0/5 | AI 5/5, human 0/5 | **MISS** |
+| 4. Label coverage | Of 5 texts (2 human, 2 AI, 1 borderline), at most 2 unsure | 3 of 5 unsure | 3 of 5 unsure | 3 of 5 unsure | **MISS** |
+| 5. Bad input | Missing, empty or 1000+ word text gets a 400, never a crash or a score, 5 of 5 | 5 of 5 → 400 | 5 of 5 → 400 | 5 of 5 → 400 | **PASS** |
+
+All three trials gave identical scores. GPT-2 runs locally in evaluation mode, so the same input produces the same output every time — the misses above are consistent, not bad luck. Criterion 2 can't be run by `run_eval.py` (it only calls `/submit`), so it is tested by hand with curl against a real `content_id` from this run: `1bd8fc9d-0154-4c68-8835-1a3db88e5c6d`, my dog story, which was wrongly labelled AI (0.75). Five appeals on it each returned `under_review` and were logged as `"event": "appeal"` after the original decision, which stayed unchanged. Five appeals on the made-up id `not-a-real-id` each returned `404 unknown_content_id`, were logged as rejections, and recorded no appeal. Because it was done by hand, it ran as one set of 5 + 5 rather than three trials.
 
 **Real output from one trial**, pasted as text, naming the file and function
 that produced it:
 
-```json
+From `results/run_2026-11-07_1647_before.md`, produced by `run_eval.py::main` against `app.py::submit` (scoring by `scoring.py::combine_signals` and `scoring.py::score_to_label`). Criterion 4, label coverage, Trial 1 (in order): my two human texts, two AI texts, one borderline (lightly-edited AI).
 
+```json
+[
+  {
+    "status": 200,
+    "guess": "unsure",
+    "confidence": 0.4409,
+    "model_score": 0.4058,
+    "style_score": 0.476,
+    "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it.",
+    "sent": "Everyone is out due to the holiday at the office. It feels so empty an"
+  },
+  {
+    "status": 200,
+    "guess": "unsure",
+    "confidence": 0.5942,
+    "model_score": 0.6474,
+    "style_score": 0.541,
+    "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it.",
+    "sent": "Time has flown by quickly. It is almost the end of 2026, and I still r"
+  },
+  {
+    "status": 200,
+    "guess": "ai",
+    "confidence": 0.7816,
+    "model_score": 0.9188,
+    "style_score": 0.6444,
+    "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+    "sent": "Regular exercise is one of the most important habits for maintaining g"
+  },
+  {
+    "status": 200,
+    "guess": "ai",
+    "confidence": 0.6922,
+    "model_score": 0.8064,
+    "style_score": 0.578,
+    "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.",
+    "sent": "Reading regularly offers many benefits for people of all ages. It help"
+  },
+  {
+    "status": 200,
+    "guess": "unsure",
+    "confidence": 0.5,
+    "model_score": 0.6847,
+    "style_score": 0.3672,
+    "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it.",
+    "sent": "Time management is a big deal for students, especially with how busy s"
+  }
+]
 ```
 
 **Diagnoses**
