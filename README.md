@@ -226,6 +226,18 @@ $ curl "http://127.0.0.1:5000/log?limit=3"
 - _What came back:_ It filled in the functions within two files and explained the code that it had written.
 - _What I changed:_ I read all the code that it generated, and added in comments so I could understand them better.
 
+**Moment 3**
+
+- _What I asked for:_ I asked Claude to build signal two in `stylometry.py`.
+- _What came back:_ Working code, but with a bug: text with no English letters (emoji, Arabic) counts as zero words, and the code scores that as fully AI.
+- _What I changed:_ The attack run caught it (MF06 and MF07 both scored exactly 0.8333). I diagnosed it and wrote down the fix in What's Still Broken, but didn't change it, since I could only make one change.
+
+**Moment 4**
+
+- _What I asked for:_ I asked Claude which improvement to make.
+- _What came back:_ It first recommended fixing signal two's backwards measures. When I asked it to test that before changing any code, the test showed it would make things worse (4 of 10 of my pieces labelled AI would become 6 or 7).
+- _What I changed:_ I moved the AI threshold to 0.75 instead, which met criterion 1 and cut broken false positives from 5 to 2.
+
 <!-- ═══════════════════════ UNIT 8 — THE TEST ═══════════════════════ -->
 
 ---
