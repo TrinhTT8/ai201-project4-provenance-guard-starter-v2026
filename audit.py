@@ -20,12 +20,24 @@ and the one you most want to compare is the one from before the change.
 """
 
 import json
+import os
+import sys
 import threading
+import time
 from datetime import datetime, timezone
 
 import config
+import faults
 
 _lock = threading.Lock()
+
+
+class AuditWriteError(RuntimeError):
+    """Every attempt to write an entry failed. Nothing was recorded."""
+
+
+# Counted since the service started; GET /health reports them.
+WRITE_STATS = {"writes": 0, "retries": 0, "failures": 0}
 
 
 def _now() -> str:
@@ -73,7 +85,7 @@ def log_decision(
     return _append(entry)
 
 
-def log_appeal(content_id: str, creator_id: str, reasoning: str) -> dict:
+def log_appeal(content_id: str, creator_id: str, reasoning: str, **extra) -> dict:
     """
     Record an appeal beside the original decision.
 
@@ -89,6 +101,7 @@ def log_appeal(content_id: str, creator_id: str, reasoning: str) -> dict:
         "event": "appeal",
         "status": "under_review",
         "reasoning": reasoning,
+        **extra,
     })
 
 
@@ -113,12 +126,46 @@ def log_rejection(creator_id: str, reason: str, **extra) -> dict:
 
 
 def _append(entry: dict) -> dict:
+    """
+    Write one entry, retrying on failure. Raises AuditWriteError if every
+    attempt fails — the caller must not tell anyone it was recorded.
+
+    An entry that needed more than one try carries `write_attempts`, so the
+    log itself shows the retry happened.
+    """
+    attempts = config.AUDIT_WRITE_ATTEMPTS
+    last_exc = None
+
+    for attempt in range(1, attempts + 1):
+        if attempt > 1:
+            entry["write_attempts"] = attempt
+        line = json.dumps(entry, ensure_ascii=False)
+        try:
+            with _lock:
+                _write_line(line, attempt)
+            WRITE_STATS["writes"] += 1
+            return entry
+        except OSError as exc:
+            last_exc = exc
+            print(f"[audit] write attempt {attempt}/{attempts} failed: {exc}", file=sys.stderr)
+            if attempt < attempts:
+                WRITE_STATS["retries"] += 1
+                time.sleep(config.AUDIT_WRITE_BACKOFF_S * 2 ** (attempt - 1))
+
+    WRITE_STATS["failures"] += 1
+    raise AuditWriteError(f"audit log write failed after {attempts} attempts: {last_exc}") from last_exc
+
+
+def _write_line(line: str, attempt: int) -> None:
+    """One attempt at one line. Flushed to disk before it counts as written."""
+    if faults.on("log_down") or (faults.on("log_flaky") and attempt < config.AUDIT_WRITE_ATTEMPTS):
+        raise OSError(f"injected fault: audit log unwritable (attempt {attempt})")
+
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
-    line = json.dumps(entry, ensure_ascii=False)
-    with _lock:
-        with config.AUDIT_LOG.open("a", encoding="utf-8") as f:
-            f.write(line + "\n")
-    return entry
+    with config.AUDIT_LOG.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+        f.flush()
+        os.fsync(f.fileno())
 
 
 def read_entries(limit: int | None = None) -> list[dict]:

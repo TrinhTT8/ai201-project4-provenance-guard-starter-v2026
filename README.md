@@ -813,3 +813,21 @@ FP05 and FP07 (human writing, 0.83 and 0.77) are still labelled AI, and criteria
 ---
 
 📖 **How to run this project: [RUNNING.md](RUNNING.md)**
+
+# Capstone
+
+## The Shape
+
+I have chosen to extend this project using shape B — Harden against failure. The goal is that the system behaves safely when things go wrong: GPT-2 fails to load or hangs, a signal crashes, the input is something a signal can't read, or the audit log can't be written. Within that, I focus on two failure themes:
+
+- **A broken signal never produces an accusation.** If the model signal times out or crashes, if one signal fails while the other works, or if the text breaks stylometry (e.g. non-English or emoji-only text), the label is always "unsure" — never "AI". If both signals fail, no decision is made at all. This protects the writer from being labelled AI because something broke.
+
+- **An appeal is never lost.** Audit-log writes are retried; if every attempt fails, the writer is told the appeal was *not* recorded instead of getting a false confirmation. An unknown `content_id` gets a clear error, a duplicate appeal doesn't create a second record, and an appeal on a decision made with a broken signal is accepted and flagged for the reviewer.
+
+## What's Out of Scope
+
+1. **The scoring itself.** The three style measures, their anchors, the 50/50 weights, the disagreement rule and the label thresholds are unchanged. The only change to a signal is that the style signal now *refuses* text it can't read instead of scoring it.
+2. **Retrying anything other than log writes.** A model call that times out is not retried — the same text gives (nearly) the same score, and a retry would double the writer's wait. It falls back to "unsure" instead.
+3. **Better detection for non-English text.** Text the signals can't read is labelled "unsure"; I don't try to detect AI writing in other languages.
+4. **Resolving appeals.** An appeal moves an item to `under_review`. The human review that follows, and any endpoint to change that status, are not built. No automated re-judging either.
+5. **Multi-server durability.** The audit log is still one local file and rate limits are still in memory. Hardening is for a single running instance.
