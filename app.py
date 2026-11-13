@@ -24,18 +24,12 @@ Routes:
     GET  /health      is the service up, and is the model loaded
 """
 
-import sys
-import threading
-import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeout
 
 from flask import Flask, jsonify, request
 
 import audit
 import config
-import faults
 import scoring
 import stylometry
 
@@ -111,7 +105,7 @@ if config.RATE_LIMITING_ENABLED:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
-        _log_rejection_safely(
+        audit.log_rejection(
             creator_id=payload.get("creator_id", "unknown"),
             reason="rate_limited",
             limit=str(exc.description),
@@ -153,68 +147,7 @@ def health():
         "detector_loaded": loaded,
         "rate_limiting": config.RATE_LIMITING_ENABLED,
         "log_entries": len(audit.read_entries()),
-        # Path B instrumentation: counts since this process started.
-        "faults_active": sorted(faults.ACTIVE),
-        "audit_writes": dict(audit.WRITE_STATS),
-        "signal_failures": dict(SIGNAL_STATS),
     })
-
-
-# ── Running the signals so a failure can't become a verdict (path B) ─────────
-#
-# Each signal runs behind a wrapper that returns (score, None) when it worked
-# and (None, reason) when it didn't. The route never sees an exception from a
-# signal — except a too-short text, which is a problem with the input, not the
-# signal, and still gets a 400.
-
-SIGNAL_STATS = {"model_timeout": 0, "model_error": 0, "style_unmeasurable": 0, "style_error": 0}
-
-# A thread can't be killed, so a timed-out call keeps running in the
-# background until it finishes. Four workers means a few hung calls don't
-# block every later submission; the timeout still answers the writer on time.
-_model_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="model-signal")
-
-
-def _model_work(text):
-    import detector
-
-    if faults.on("model_crash"):
-        raise RuntimeError("injected fault: model signal crashed")
-    if faults.on("model_timeout"):
-        time.sleep(config.MODEL_SIGNAL_TIMEOUT_S + 1)
-    return detector.model_signal(text)
-
-
-def _run_model_signal(text):
-    import detector
-
-    future = _model_pool.submit(_model_work, text)
-    try:
-        return future.result(timeout=config.MODEL_SIGNAL_TIMEOUT_S), None
-    except FutureTimeout:
-        SIGNAL_STATS["model_timeout"] += 1
-        return None, f"model_timeout: no answer within {config.MODEL_SIGNAL_TIMEOUT_S:g}s"
-    except ValueError:
-        raise                                   # too short: the input's fault → 400
-    except detector.DetectorUnavailable as exc:
-        SIGNAL_STATS["model_error"] += 1
-        return None, f"model_unavailable: {str(exc).splitlines()[0]}"
-    except Exception as exc:  # noqa: BLE001 — any crash is a failed signal, not a 500
-        SIGNAL_STATS["model_error"] += 1
-        return None, f"model_error: {type(exc).__name__}: {exc}"
-
-
-def _run_style_signal(text):
-    try:
-        if faults.on("style_crash"):
-            raise RuntimeError("injected fault: style signal crashed")
-        return stylometry.style_signal(text), None
-    except stylometry.StyleUnmeasurable as exc:
-        SIGNAL_STATS["style_unmeasurable"] += 1
-        return None, f"style_unmeasurable: {exc}"
-    except Exception as exc:  # noqa: BLE001
-        SIGNAL_STATS["style_error"] += 1
-        return None, f"style_error: {type(exc).__name__}: {exc}"
 
 
 # ── YOU BUILD THIS ────────────────────────────────────────────────────────────
@@ -268,6 +201,8 @@ def submit():
     what should this do when `text` is missing, empty, or enormous? A crash on
     a malformed input is one of the most common real failures there is.
     """
+    import detector
+
     payload = request.get_json(silent=True)
     if not isinstance(payload, dict):
         payload = {}
@@ -284,56 +219,33 @@ def submit():
     if len(text.split()) > MAX_WORDS:
         return _reject(creator_id, "text_too_long", f"Text is over {MAX_WORDS} words.")
 
-    # ── Both signals, each behind a wrapper that can't throw (path B) ────────
+    # ── Signal one ───────────────────────────────────────────────────────────
     try:
-        model_score, model_failure = _run_model_signal(text)
+        model_score = detector.model_signal(text)
     except ValueError:
         return _reject(creator_id, "text_too_short", "Text is too short to score — a few sentences at least.")
-    style_score, style_failure = _run_style_signal(text)
-    failed_signals = {name: why for name, why in
-                      (("model", model_failure), ("style", style_failure)) if why}
+    except detector.DetectorUnavailable:
+        return _reject(creator_id, "detector_unavailable",
+                       "The model isn't loaded. Run `python detector.py` once to download it.", 503)
 
-    # ── Nothing worked: no evidence, so no decision at all ───────────────────
-    if len(failed_signals) == 2:
-        return _reject(creator_id, "scoring_unavailable",
-                       "We couldn't check this text right now. Nothing has been decided "
-                       "about it. Please try again in a few minutes.",
-                       503, failed_signals=failed_signals)
+    # ── Signal two, then combine ─────────────────────────────────────────────
+    style_score = stylometry.style_signal(text)
+    combined_score = scoring.combine_signals(model_score, style_score)
 
-    # ── A broken signal never produces an accusation ─────────────────────────
-    # One working signal is half the evidence, and the disagreement rule
-    # already says half the evidence isn't enough. Always "unsure", never a
-    # verdict either way, and the log says which signal failed and why.
-    if failed_signals:
-        combined_score = 0.5
-        guess, label = "unsure", scoring.LABEL_DEGRADED
-    else:
-        combined_score = scoring.combine_signals(model_score, style_score)
-        guess, label = scoring.score_to_label(combined_score)
+    # ── The label a reader sees ──────────────────────────────────────────────
+    guess, label = scoring.score_to_label(combined_score)
 
     # ── Log it. The content_id is what /appeal looks up later ────────────────
-    # If the decision can't be written, the writer doesn't get a content_id:
-    # an id that isn't in the log is an appeal that would be refused later.
     content_id = str(uuid.uuid4())
-    try:
-        audit.log_decision(
-            content_id=content_id,
-            creator_id=creator_id,
-            guess=guess,
-            model_score=model_score,
-            style_score=style_score,
-            combined_score=combined_score,
-            label=label,
-            degraded=bool(failed_signals),
-            failed_signals=failed_signals or None,
-        )
-    except audit.AuditWriteError as exc:
-        print(f"[submit] decision NOT recorded for {creator_id}: {exc}", file=sys.stderr)
-        return jsonify({
-            "error": "not_recorded",
-            "message": "We checked your text but couldn't save the result, so no label "
-                       "has been given. Please submit it again in a moment.",
-        }), 503
+    audit.log_decision(
+        content_id=content_id,
+        creator_id=creator_id,
+        guess=guess,
+        model_score=model_score,
+        style_score=style_score,
+        combined_score=combined_score,
+        label=label,
+    )
 
     return jsonify({
         "content_id": content_id,
@@ -342,8 +254,6 @@ def submit():
         "label": label,
         "model_score": model_score,
         "style_score": style_score,
-        "degraded": bool(failed_signals),
-        "failed_signals": sorted(failed_signals),
     })
 
 
@@ -352,25 +262,8 @@ MAX_WORDS = 1000
 
 def _reject(creator_id, reason, message, status=400, **extra):
     """Refuse a request, and leave a trace of it in the log."""
-    _log_rejection_safely(creator_id=creator_id, reason=reason, route=request.path, **extra)
+    audit.log_rejection(creator_id=creator_id, reason=reason, route=request.path, **extra)
     return jsonify({"error": reason, "message": message}), status
-
-
-def _log_rejection_safely(**fields):
-    """
-    A rejection's trace, best effort. If the log itself is down, the writer
-    still gets their clear 4xx/5xx — not a 500 from a failed write — and the
-    lost trace goes to stderr so it isn't silent.
-    """
-    try:
-        audit.log_rejection(**fields)
-    except audit.AuditWriteError as exc:
-        print(f"[audit] rejection NOT logged {fields}: {exc}", file=sys.stderr)
-
-
-# Check-then-write for one appeal must not interleave with another, or two
-# simultaneous appeals on the same id would both see "no appeal yet".
-_appeal_lock = threading.Lock()
 
 
 @app.post("/appeal")
@@ -412,66 +305,25 @@ def appeal():
     # Logged as attempted_content_id, not content_id, so a bad guess never
     # shows up as part of a real item's history.
     content_id = content_id.strip()
+    decisions = [e for e in audit.entries_for(content_id) if e.get("status") == "decided"]
+    if not decisions:
+        return _reject(caller, "unknown_content_id",
+                       f"No submission found with content_id {content_id}. Check it was copied exactly.",
+                       404, attempted_content_id=content_id)
 
-    with _appeal_lock:
-        history = audit.entries_for(content_id)
-        decisions = [e for e in history if e.get("status") == "decided"]
-        if not decisions:
-            return _reject(caller, "unknown_content_id",
-                           f"No submission found with content_id {content_id}. Check it was copied exactly.",
-                           404, attempted_content_id=content_id)
+    # The appeal sits after the original decision; nothing is overwritten.
+    original = decisions[0]
+    audit.log_appeal(
+        content_id=content_id,
+        creator_id=original.get("creator_id", "unknown"),
+        reasoning=reasoning.strip(),
+    )
 
-        # ── One appeal per decision (path B) ─────────────────────────────────
-        # A writer retrying after a dropped connection must not create a
-        # second record. 409 says so plainly — and that the first one stands.
-        earlier = [e for e in history if e.get("event") == "appeal"]
-        if earlier:
-            _log_rejection_safely(creator_id=caller, reason="duplicate_appeal",
-                                  route=request.path, attempted_content_id=content_id)
-            return jsonify({
-                "error": "already_appealed",
-                "content_id": content_id,
-                "status": "under_review",
-                "appealed_at": earlier[0].get("timestamp"),
-                "message": "This decision is already under review. Your earlier appeal is on "
-                           "file, and a person will look at it — you don't need to send another.",
-            }), 409
-
-        # ── Appealing a decision made with a broken signal (path B) ──────────
-        # Allowed, and flagged, so a reviewer knows the label rests on half
-        # the evidence and can look at it first.
-        original = decisions[0]
-        degraded = bool(original.get("degraded"))
-
-        # ── Never confirm an appeal that isn't on disk (path B) ──────────────
-        # audit retries the write; if every attempt fails, the writer is told
-        # it was NOT recorded. The appeal sits after the original decision.
-        try:
-            audit.log_appeal(
-                content_id=content_id,
-                creator_id=original.get("creator_id", "unknown"),
-                reasoning=reasoning.strip(),
-                degraded_decision=degraded,
-            )
-        except audit.AuditWriteError as exc:
-            print(f"[appeal] NOT recorded for {content_id}: {exc}", file=sys.stderr)
-            return jsonify({
-                "error": "appeal_not_recorded",
-                "content_id": content_id,
-                "message": "We couldn't save your appeal, so it has NOT been recorded yet. "
-                           "Please send it again in a moment — your content_id is still valid.",
-            }), 503
-
-    message = "Thanks. Your appeal has been recorded, and a person will review this decision."
-    if degraded:
-        message += (" This decision was made while one of our checks wasn't working, so it "
-                    "has been flagged for the reviewer.")
     return jsonify({
         "content_id": content_id,
         "status": "under_review",
         "original_guess": original.get("guess"),
-        "degraded_decision": degraded,
-        "message": message,
+        "message": "Thanks. Your appeal has been recorded, and a person will review this decision.",
     })
 
 
@@ -497,21 +349,7 @@ def main():
     print(f"  detector model:  {config.DETECTOR_MODEL}")
     print(f"  rate limiting:   {'ON' if config.RATE_LIMITING_ENABLED else 'off (unit 8)'}")
     print(f"  audit log:       {config.AUDIT_LOG}")
-    print(f"  model timeout:   {config.MODEL_SIGNAL_TIMEOUT_S:g}s")
-    if faults.ACTIVE:
-        print(f"  ⚠️  FAULTS ON:    {', '.join(sorted(faults.ACTIVE))}  (failure drill — not real service)")
     print()
-
-    # Load the model now, in the background, so the first writer's request
-    # isn't the one that pays the 10–20 s load and trips the timeout.
-    def warm():
-        import detector
-        try:
-            print(f"  {detector.warm_up()}")
-        except Exception as exc:  # noqa: BLE001
-            print(f"  ⚠️  model warm-up failed: {exc}", file=sys.stderr)
-
-    threading.Thread(target=warm, daemon=True).start()
     print("Check it's alive:")
     print(f'  curl -X POST http://{config.HOST}:{config.PORT}/ping \\')
     print('    -H "Content-Type: application/json" \\')

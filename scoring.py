@@ -120,16 +120,6 @@ LABEL_AI = (
 )
 
 
-# Shown when one of the two checks failed (timed out, crashed, or couldn't
-# read the text). One working signal is never enough to accuse anyone, so the
-# guess is always "unsure" — see app.py::submit.
-LABEL_DEGRADED = (
-    "We couldn't finish checking this text: one of our checks didn't work "
-    "this time. This is not an accusation, and your work has not been marked "
-    "as AI-written. If you'd like, you can appeal and a person will review it."
-)
-
-
 def label_ranges() -> list[tuple[str, str]]:
     """
     The score range each label covers. Your README needs these beside the

@@ -113,20 +113,6 @@ RATE_LIMIT_PER_DAY = 150
 RATE_LIMIT_STORAGE = "memory://"
 
 
-# ─── Failure handling (capstone, path B) ─────────────────────────────────────
-# How long a submission waits for the model signal before giving up on it.
-# The first call loads the model (10–20 s), so app.py warms it up at startup;
-# this has to sit comfortably above a normal warm call (1–2 s) and below the
-# point where a writer gives up on the page.
-MODEL_SIGNAL_TIMEOUT_S = float(os.getenv("AI201_MODEL_TIMEOUT", "30"))
-
-# An audit-log write is tried this many times, waiting BACKOFF, 2×BACKOFF, …
-# between tries. If every try fails, the caller is told — an appeal is never
-# confirmed unless it is actually on disk.
-AUDIT_WRITE_ATTEMPTS = 3
-AUDIT_WRITE_BACKOFF_S = 0.1
-
-
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
 LOG_DIR = ROOT / "logs"

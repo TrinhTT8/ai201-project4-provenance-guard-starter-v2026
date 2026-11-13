@@ -45,33 +45,6 @@ def words(text: str) -> list[str]:
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
-# ── Can this signal read the text at all? (capstone, path B) ─────────────────
-# `words` only sees English letters. Korean, Russian, emoji-only text has no
-# "words" to it, and every measure below scores zero words as maximally
-# uniform — that is, as AI. Before this check, a Korean paragraph scored
-# style 0.83 and was labelled high-confidence AI. Text this signal can't read
-# is now refused, and the route treats that as a failed signal, not a verdict.
-
-MIN_WORDS = 10        # fewer readable words than this is too little to measure
-MIN_COVERAGE = 0.80   # share of letters/digits that are ones `words` can see
-
-
-class StyleUnmeasurable(ValueError):
-    """This text is outside what the style signal can measure."""
-
-
-def check_measurable(text: str) -> None:
-    """Raise StyleUnmeasurable if the measures below would be meaningless."""
-    alnum = [c for c in text if c.isalnum()]
-    readable = [c for c in alnum if c.isascii()]
-    if alnum and len(readable) / len(alnum) < MIN_COVERAGE:
-        raise StyleUnmeasurable(
-            f"only {len(readable) / len(alnum):.0%} of the text is in a script this signal can read")
-    count = len(words(text))
-    if count < MIN_WORDS:
-        raise StyleUnmeasurable(f"only {count} readable words (needs {MIN_WORDS})")
-
-
 # ── The three measures — YOU BUILD THESE ─────────────────────────────────────
 
 def sentence_length_spread(text: str) -> float:
@@ -175,11 +148,7 @@ def style_signal(text: str) -> float:
     the three are averaged with equal weight. All three measures run "higher
     is more human", so `_ai_ish` flips them. The anchors are first guesses;
     move them once you've seen the calibration inputs.
-
-    Raises StyleUnmeasurable for text it can't read (see check_measurable).
     """
-    check_measurable(text)
-
     parts = [
         _ai_ish(type_token_ratio(text), *TTR_ANCHORS),
         _ai_ish(punctuation_density(text), *PUNCT_ANCHORS),
