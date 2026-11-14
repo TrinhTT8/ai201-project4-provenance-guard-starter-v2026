@@ -120,6 +120,12 @@ RATE_LIMIT_STORAGE = "memory://"
 # point where a writer gives up on the page.
 MODEL_SIGNAL_TIMEOUT_S = float(os.getenv("AI201_MODEL_TIMEOUT", "30"))
 
+# An audit-log write is tried this many times, waiting BACKOFF, 2×BACKOFF, …
+# between tries. If every try fails, the caller is told — an appeal is never
+# confirmed unless it is actually on disk.
+AUDIT_WRITE_ATTEMPTS = 3
+AUDIT_WRITE_BACKOFF_S = 0.1
+
 
 # ─── Paths ───────────────────────────────────────────────────────────────────
 

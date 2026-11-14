@@ -109,7 +109,7 @@ if config.RATE_LIMITING_ENABLED:
         payload = request.get_json(silent=True)
         if not isinstance(payload, dict):
             payload = {}
-        audit.log_rejection(
+        _log_rejection_safely(
             creator_id=payload.get("creator_id", "unknown"),
             reason="rate_limited",
             limit=str(exc.description),
@@ -153,6 +153,7 @@ def health():
         "log_entries": len(audit.read_entries()),
         # Path B instrumentation: counts since this process started.
         "signal_failures": dict(SIGNAL_STATS),
+        "audit_writes": dict(audit.WRITE_STATS),
     })
 
 
@@ -296,18 +297,28 @@ def submit():
         guess, label = scoring.score_to_label(combined_score)
 
     # ── Log it. The content_id is what /appeal looks up later ────────────────
+    # If the decision can't be written, the writer doesn't get a content_id:
+    # an id that isn't in the log is an appeal that would be refused later.
     content_id = str(uuid.uuid4())
-    audit.log_decision(
-        content_id=content_id,
-        creator_id=creator_id,
-        guess=guess,
-        model_score=model_score,
-        style_score=style_score,
-        combined_score=combined_score,
-        label=label,
-        degraded=bool(failed_signals),
-        failed_signals=failed_signals or None,
-    )
+    try:
+        audit.log_decision(
+            content_id=content_id,
+            creator_id=creator_id,
+            guess=guess,
+            model_score=model_score,
+            style_score=style_score,
+            combined_score=combined_score,
+            label=label,
+            degraded=bool(failed_signals),
+            failed_signals=failed_signals or None,
+        )
+    except audit.AuditWriteError as exc:
+        print(f"[submit] decision NOT recorded for {creator_id}: {exc}", file=sys.stderr)
+        return jsonify({
+            "error": "not_recorded",
+            "message": "We checked your text but couldn't save the result, so no label "
+                       "has been given. Please submit it again in a moment.",
+        }), 503
 
     return jsonify({
         "content_id": content_id,
@@ -326,8 +337,25 @@ MAX_WORDS = 1000
 
 def _reject(creator_id, reason, message, status=400, **extra):
     """Refuse a request, and leave a trace of it in the log."""
-    audit.log_rejection(creator_id=creator_id, reason=reason, route=request.path, **extra)
+    _log_rejection_safely(creator_id=creator_id, reason=reason, route=request.path, **extra)
     return jsonify({"error": reason, "message": message}), status
+
+
+def _log_rejection_safely(**fields):
+    """
+    A rejection's trace, best effort. If the log itself is down, the writer
+    still gets their clear 4xx/5xx — not a 500 from a failed write — and the
+    lost trace goes to stderr so it isn't silent.
+    """
+    try:
+        audit.log_rejection(**fields)
+    except audit.AuditWriteError as exc:
+        print(f"[audit] rejection NOT logged {fields}: {exc}", file=sys.stderr)
+
+
+# Check-then-write for one appeal must not interleave with another, or two
+# simultaneous appeals on the same id would both see "no appeal yet".
+_appeal_lock = threading.Lock()
 
 
 @app.post("/appeal")
@@ -369,25 +397,66 @@ def appeal():
     # Logged as attempted_content_id, not content_id, so a bad guess never
     # shows up as part of a real item's history.
     content_id = content_id.strip()
-    decisions = [e for e in audit.entries_for(content_id) if e.get("status") == "decided"]
-    if not decisions:
-        return _reject(caller, "unknown_content_id",
-                       f"No submission found with content_id {content_id}. Check it was copied exactly.",
-                       404, attempted_content_id=content_id)
 
-    # The appeal sits after the original decision; nothing is overwritten.
-    original = decisions[0]
-    audit.log_appeal(
-        content_id=content_id,
-        creator_id=original.get("creator_id", "unknown"),
-        reasoning=reasoning.strip(),
-    )
+    with _appeal_lock:
+        history = audit.entries_for(content_id)
+        decisions = [e for e in history if e.get("status") == "decided"]
+        if not decisions:
+            return _reject(caller, "unknown_content_id",
+                           f"No submission found with content_id {content_id}. Check it was copied exactly.",
+                           404, attempted_content_id=content_id)
 
+        # ── One appeal per decision (path B) ─────────────────────────────────
+        # A writer retrying after a dropped connection must not create a
+        # second record. 409 says so plainly — and that the first one stands.
+        earlier = [e for e in history if e.get("event") == "appeal"]
+        if earlier:
+            _log_rejection_safely(creator_id=caller, reason="duplicate_appeal",
+                                  route=request.path, attempted_content_id=content_id)
+            return jsonify({
+                "error": "already_appealed",
+                "content_id": content_id,
+                "status": "under_review",
+                "appealed_at": earlier[0].get("timestamp"),
+                "message": "This decision is already under review. Your earlier appeal is on "
+                           "file, and a person will look at it — you don't need to send another.",
+            }), 409
+
+        # ── Appealing a decision made with a broken signal (path B) ──────────
+        # Allowed, and flagged, so a reviewer knows the label rests on half
+        # the evidence and can look at it first.
+        original = decisions[0]
+        degraded = bool(original.get("degraded"))
+
+        # ── Never confirm an appeal that isn't on disk (path B) ──────────────
+        # audit retries the write; if every attempt fails, the writer is told
+        # it was NOT recorded. The appeal sits after the original decision.
+        try:
+            audit.log_appeal(
+                content_id=content_id,
+                creator_id=original.get("creator_id", "unknown"),
+                reasoning=reasoning.strip(),
+                degraded_decision=degraded,
+            )
+        except audit.AuditWriteError as exc:
+            print(f"[appeal] NOT recorded for {content_id}: {exc}", file=sys.stderr)
+            return jsonify({
+                "error": "appeal_not_recorded",
+                "content_id": content_id,
+                "message": "We couldn't save your appeal, so it has NOT been recorded yet. "
+                           "Please send it again in a moment — your content_id is still valid.",
+            }), 503
+
+    message = "Thanks. Your appeal has been recorded, and a person will review this decision."
+    if degraded:
+        message += (" This decision was made while one of our checks wasn't working, so it "
+                    "has been flagged for the reviewer.")
     return jsonify({
         "content_id": content_id,
         "status": "under_review",
         "original_guess": original.get("guess"),
-        "message": "Thanks. Your appeal has been recorded, and a person will review this decision.",
+        "degraded_decision": degraded,
+        "message": message,
     })
 
 
