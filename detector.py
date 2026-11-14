@@ -42,11 +42,15 @@ for yourself where it lands.
 """
 
 import math
+import threading
 
 import config
 
 _model = None
 _tokenizer = None
+# The model now loads on a worker thread (app.py's timeout and startup
+# warm-up). Without this, two first requests could both start a 550 MB load.
+_load_lock = threading.Lock()
 
 
 class DetectorUnavailable(RuntimeError):
@@ -55,6 +59,13 @@ class DetectorUnavailable(RuntimeError):
 
 def _load():
     """Load the model once and keep it. First call downloads ~550 MB."""
+    if _model is not None:
+        return _model, _tokenizer
+    with _load_lock:
+        return _load_locked()
+
+
+def _load_locked():
     global _model, _tokenizer
     if _model is not None:
         return _model, _tokenizer
@@ -69,9 +80,11 @@ def _load():
         ) from exc
 
     try:
-        _tokenizer = AutoTokenizer.from_pretrained(config.DETECTOR_MODEL)
-        _model = AutoModelForCausalLM.from_pretrained(config.DETECTOR_MODEL)
-        _model.eval()
+        tokenizer = AutoTokenizer.from_pretrained(config.DETECTOR_MODEL)
+        model = AutoModelForCausalLM.from_pretrained(config.DETECTOR_MODEL)
+        model.eval()
+        # Publish only once fully ready: other threads check `_model` unlocked.
+        _tokenizer, _model = tokenizer, model
     except Exception as exc:  # noqa: BLE001
         raise DetectorUnavailable(
             f"Couldn't load '{config.DETECTOR_MODEL}': {exc}\n"

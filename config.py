@@ -113,6 +113,14 @@ RATE_LIMIT_PER_DAY = 150
 RATE_LIMIT_STORAGE = "memory://"
 
 
+# ─── Failure handling (capstone, path B) ─────────────────────────────────────
+# How long a submission waits for the model signal before giving up on it.
+# The first call loads the model (10–20 s), so app.py warms it up at startup;
+# this has to sit comfortably above a normal warm call (1–2 s) and below the
+# point where a writer gives up on the page.
+MODEL_SIGNAL_TIMEOUT_S = float(os.getenv("AI201_MODEL_TIMEOUT", "30"))
+
+
 # ─── Paths ───────────────────────────────────────────────────────────────────
 
 LOG_DIR = ROOT / "logs"
