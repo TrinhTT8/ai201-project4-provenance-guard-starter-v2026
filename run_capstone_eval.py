@@ -55,6 +55,10 @@ TIMEOUT_LIMIT_S = 32.0   # criterion 3: the real 30 s timeout + 2 s
 
 # ── The service, started for real ────────────────────────────────────────────
 
+class ServiceDidNotStart(RuntimeError):
+    """The service never became ready — a harness problem, not a criterion result."""
+
+
 class Service:
     """with Service("model_crash"): ... — a real `python app.py`, stopped after."""
 
@@ -62,16 +66,25 @@ class Service:
         self.faults = ",".join(faults)
 
     def __enter__(self):
+        # PYTHONUNBUFFERED: two service starts stalled with NO output at all,
+        # because output to a file is buffered — this makes a stall readable.
+        # HF_HUB_OFFLINE: by default the model loader asks huggingface.co
+        # whether the model changed, on every start, even when it's on disk.
+        # A slow or hung network call there is the likely cause of those
+        # stalls; the model is already downloaded, so load it locally only.
         env = {**os.environ, "PORT": str(PORT), "AI201_DEBUG": "0", "AI201_FAULTS": self.faults,
-               "PYTHONIOENCODING": "utf-8"}
+               "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "HF_HUB_OFFLINE": "1"}
         self.out = tempfile.TemporaryFile()
         self.proc = subprocess.Popen([sys.executable, "app.py"], env=env,
                                      stdout=self.out, stderr=subprocess.STDOUT)
-        deadline = time.time() + 180
+        # 300 s, not 180: the first "after" attempt died in trial 2 when one
+        # service start took longer than 180 s to load the model.
+        deadline = time.time() + 300
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 self.out.seek(0)
-                sys.exit(f"Service exited early:\n{self.out.read().decode(errors='replace')}")
+                raise ServiceDidNotStart(f"Service ({self.faults or 'no faults'}) exited early:\n"
+                                         f"{self.out.read().decode(errors='replace')[-3000:]}")
             try:
                 health = requests.get(f"{URL}/health", timeout=2).json()
                 if health.get("detector_loaded"):
@@ -81,7 +94,11 @@ class Service:
                 pass
             time.sleep(1)
         self.proc.kill()
-        sys.exit("Service didn't finish loading the model within 180 s.")
+        self.out.seek(0)
+        tail = self.out.read().decode(errors="replace")[-3000:]
+        self.out.close()
+        raise ServiceDidNotStart(f"Service ({self.faults or 'no faults'}) didn't finish loading "
+                                 f"the model within 300 s. Its output:\n{tail}")
 
     def __exit__(self, *exc):
         self.proc.terminate()
@@ -94,8 +111,18 @@ def cid():
 
 
 def submit(text, creator=None):
+    """
+    A request that gets no answer at all within 120 s is recorded as a failed
+    request (status None), not allowed to crash the run — the second "after"
+    attempt died that way, and a missing answer is exactly what criterion 3
+    is meant to catch.
+    """
     started = time.perf_counter()
-    r = requests.post(f"{URL}/submit", json={"text": text, "creator_id": creator or cid()}, timeout=120)
+    try:
+        r = requests.post(f"{URL}/submit", json={"text": text, "creator_id": creator or cid()},
+                          timeout=120)
+    except requests.Timeout:
+        return None, {"error": "no answer within 120 s"}, round(time.perf_counter() - started, 2)
     return r.status_code, _json(r), round(time.perf_counter() - started, 2)
 
 
@@ -181,7 +208,11 @@ def crit_2():
             s, b, _ = submit(text)
             rows.append((name, s, b))
     ai = [n for n, s, b in rows if b.get("guess") == "ai"]
-    cell = f"{len(ai)}/10 AI" + (f" ({', '.join(ai)})" if ai else "")
+    # Milestone 6: also count how many the readability check itself caught
+    # (style refused → degraded). Not part of the criterion's pass/fail; it is
+    # the tighter measure the improvement is aimed at.
+    caught = [n for n, s, b in rows if "style" in (b.get("failed_signals") or [])]
+    cell = f"{len(ai)}/10 AI" + (f" ({', '.join(ai)})" if ai else "") + f" · {len(caught)}/10 caught by check"
     ev = [{"text": n, "status": s, "guess": b.get("guess"), "degraded": b.get("degraded"),
            "failed_signals": b.get("failed_signals"), "model_score": b.get("model_score"),
            "style_score": b.get("style_score"), "confidence": b.get("confidence"),
@@ -282,6 +313,14 @@ CRITERIA = [
 
 # ── Running and reporting ────────────────────────────────────────────────────
 
+def NOT_RUN(exc):
+    """A trial whose service never started: recorded, not counted as pass or fail."""
+    return "not run (service didn't start)", None, {"harness error": str(exc)}
+
+
+def status(result):
+    return {True: "pass", False: "FAIL", None: "NOT RUN"}[result[1]]
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -304,15 +343,21 @@ def main():
     for t in range(1, args.trials + 1):
         print(f"── Trial {t} ──", flush=True)
         if 1 in want:
-            r1, r3 = crit_1_and_3()
+            try:
+                r1, r3 = crit_1_and_3()
+            except ServiceDidNotStart as exc:
+                r1 = r3 = NOT_RUN(exc)
             trials[1].append(r1)
             trials[3].append(r3)
-            print(f"  1: {r1[0]}  {'pass' if r1[1] else 'FAIL'}\n  3: {r3[0]}  {'pass' if r3[1] else 'FAIL'}", flush=True)
+            print(f"  1: {r1[0]}  {status(r1)}\n  3: {r3[0]}  {status(r3)}", flush=True)
         for n, fn in ((2, crit_2), (4, crit_4), (5, crit_5)):
             if n in want:
-                r = fn()
+                try:
+                    r = fn()
+                except ServiceDidNotStart as exc:
+                    r = NOT_RUN(exc)
                 trials[n].append(r)
-                print(f"  {n}: {r[0]}  {'pass' if r[1] else 'FAIL'}", flush=True)
+                print(f"  {n}: {r[0]}  {status(r)}", flush=True)
 
     path = write_report(trials, args)
     print(f"\nReport: {path}")
@@ -337,7 +382,10 @@ def write_report(trials, args):
         if n not in trials:
             continue
         cells = [c for c, _, _ in trials[n]]
-        verdict = "MET" if all(p for _, p, _ in trials[n]) else "MISSED"
+        if any(p is None for _, p, _ in trials[n]):
+            verdict = "INCOMPLETE"          # a trial never ran — no verdict either way
+        else:
+            verdict = "MET" if all(p for _, p, _ in trials[n]) else "MISSED"
         lines.append(f"| {n}. {name} | {target} | " + " | ".join(cells) + f" | **{verdict}** |")
 
     lines += ["", "---", "", "## What actually came back", "",

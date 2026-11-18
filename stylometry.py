@@ -55,6 +55,26 @@ def words(text: str) -> list[str]:
 MIN_WORDS = 10        # fewer readable words than this is too little to measure
 MIN_COVERAGE = 0.80   # share of letters/digits that are ones `words` can see
 
+# Capstone Milestone 6. The two checks above test the ALPHABET, not the
+# LANGUAGE. Spanish and French use English letters, so they passed both and
+# got a style score — from measures whose anchors were tuned on English, so
+# the number meant nothing. Milestone 5: Spanish scored style 0.64 and French
+# landed at 0.397, 0.047 above the "human" line; both stayed "unsure" by luck.
+#
+# English prose is full of the same few short words. Across every English
+# text in scenarios.py and the attack set (my own writing, formal AI text,
+# evasion and prompt-injection attacks), these made up 25%–53% of the words.
+# Spanish: 0%. French: 3%. Below 12%, the text isn't English enough to measure.
+# Deliberately left out: words that are also common Spanish or French —
+# "a", "on", "me", "no", "de", "la".
+MIN_ENGLISH_SHARE = 0.12
+COMMON_ENGLISH = frozenset(
+    "the and of to in is it that was for with as at by this be are have has had "
+    "not but or from they we you he she his her i my our your their them were "
+    "will would can could there what when which who if so just all about been do "
+    "does did an its than then also very".split()
+)
+
 
 class StyleUnmeasurable(ValueError):
     """This text is outside what the style signal can measure."""
@@ -67,9 +87,15 @@ def check_measurable(text: str) -> None:
     if alnum and len(readable) / len(alnum) < MIN_COVERAGE:
         raise StyleUnmeasurable(
             f"only {len(readable) / len(alnum):.0%} of the text is in a script this signal can read")
-    count = len(words(text))
+    all_words = words(text)
+    count = len(all_words)
     if count < MIN_WORDS:
         raise StyleUnmeasurable(f"only {count} readable words (needs {MIN_WORDS})")
+    english = sum(w in COMMON_ENGLISH for w in all_words) / count
+    if english < MIN_ENGLISH_SHARE:
+        raise StyleUnmeasurable(
+            f"only {english:.0%} common English words (needs {MIN_ENGLISH_SHARE:.0%}) "
+            f"— probably not English")
 
 
 # ── The three measures — YOU BUILD THESE ─────────────────────────────────────

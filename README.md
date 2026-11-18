@@ -1124,3 +1124,65 @@ Five capstone criteria from `criteria.md`, three trials each, nothing changed in
 {"timestamp": "2026-11-18T17:05:05+00:00", "content_id": "018cb557-f588-4f95-96b0-42fb2bff958d", "creator_id": "cap_e1e54d0505", "event": "appeal", "status": "under_review", "reasoning": "I wrote this myself.", "degraded_decision": false, "request_id": "5e5a2336789b", "route": "/appeal", "duration_ms": 15.7, "cpu_ms": 140.6}
 {"timestamp": "2026-11-18T17:05:05+00:00", "creator_id": "cap_a32d94b604", "event": "rejected", "status": "rejected", "reason": "duplicate_appeal", "request_id": "1a96cade063f", "route": "/appeal", "duration_ms": 15.5, "cpu_ms": 187.5, "attempted_content_id": "1eb743e8-834d-4a85-a250-0b3da8d25338"}
 ```
+
+
+## Verdicts and Diagnosis — Capstone
+
+### Before and after, side by side
+
+Same five criteria, same inputs (`capstone_scenarios.py`), three trials each. **Before:** [results/capstone_run_2026-11-18_1112_before.md](results/capstone_run_2026-11-18_1112_before.md). **After** the one improvement (below): [results/capstone_run_2026-11-18_1434_after.md](results/capstone_run_2026-11-18_1434_after.md).
+
+| Criterion | Target | Before: Run 1 / 2 / 3 | Before | After: Run 1 / 2 / 3 | After |
+|---|---|---|---|---|---|
+| 1. Broken signal never accuses | 15/15 unsure+degraded, 0 ai/human | 15/15 · 15/15 · 15/15 | **MET** | 15/15 · **14/15** · 15/15 | **MISSED** |
+| 2. Unreadable text never labelled AI | 0 of 10 labelled AI | 0/10 AI · 0/10 · 0/10 | **MET** | 0/10 AI · 0/10 · 0/10 | **MET** |
+| ↳ tighter measure: caught by the readability check | 10 of 10 (see "were my targets too low") | 8/10 · 8/10 · 8/10 | would MISS | 10/10 · 10/10 · 10/10 | would MEET |
+| 3. Hung model still answers in time | 5/5 within 32 s, unsure, no 500 | 5/5 (max 30.1 s) ×3 | **MET** | 5/5 · **4/5 (max 410.8 s)** · 5/5 | **MISSED** |
+| 4. Appeal never falsely confirmed | down: 0/5 "recorded" + 5/5 503; flaky: 5/5 once | met in all three | **MET** | met in all three | **MET** |
+| 5. Every run leaves a trace | 20/20 logged with timestamp, route, duration_ms | 20/20 ×3 | **MET** | 20/20 ×3 | **MET** |
+
+The "before" run didn't print the caught-by-check count; 8/10 comes from its own output (Spanish and French have `failed_signals: []`, the other eight `["style"]`), the same in all three trials.
+
+### The two misses are one problem
+
+Criteria 1 and 3 both missed in after-trial 2, on **the same request** — the third of the five submissions sent while the model was set to hang (`AI201_FAULTS=model_timeout`). The client waited 410.8 s and gave up with no answer, which is the criterion 3 miss and why criterion 1 counts 14/15. The service did finish it eventually, and logged this:
+
+```json
+{"timestamp": "2026-11-18T20:27:04+00:00", "content_id": "1d9cb5ce-aff8-4d08-9e66-fd3201b1310e", "creator_id": "cap_ef9842d5d0", "guess": "ai", "model_score": 0.8864, "style_score": 0.6688, "combined_score": 0.7776, "label": "This writing has strong patterns that are common in AI-generated text. Our checks can be wrong, especially with plain or simple writing. If you wrote this yourself, you can appeal, and a person will review it.", "status": "decided", "degraded": false, "failed_signals": null, "input_words": 47, "input_chars": 303, "input_preview": "The implementation of the proposed framework requires carefu", "model_ms": 413256.4, "style_ms": 0.3, "request_id": "9fce07fcfceb", "route": "/submit", "duration_ms": 413258.7, "cpu_ms": 11578.1}
+```
+
+A request whose model was supposed to count as hung was logged as **high-confidence AI**. The writer never saw that label, because the client had already given up, but it's exactly what criterion 1 exists to prevent.
+
+**What happened:** the laptop running the service went to sleep in the middle of the request. The Windows system log (Kernel-Power) shows *"The system is entering Modern Standby"* at **20:20:06 UTC** and *"The system is exiting Modern Standby"* at **20:27:02**. The request finished two seconds after the laptop woke up. While the laptop slept, every thread in the service was frozen, including the injected 31-second "hang". By the time anything ran again, the model had finished.
+
+**Stage:** `app.py::_run_model_signal`. **Mechanism:** the 30-second limit is enforced by `future.result(timeout=30)`, which only limits *how long the thread waits*. It never checks *how much time has actually passed*. When the thread woke up 413 seconds later and found a finished result, it used it, as if the model had answered on time. So the timeout is a soft deadline: anything that freezes or starves the process — sleep, a suspended VM, a saturated CPU — lets a late model score through.
+
+How much of it is the code and how much the machine:
+- **The lateness (criterion 3) is the machine.** Nothing can answer while the laptop sleeps. This is a cost of Path B: "local" means the service lives on a machine that sleeps when nobody touches it.
+- **The AI label (criterion 1) is the code.** A late answer should have been thrown away. The fix is a single elapsed-time check — if more than `MODEL_SIGNAL_TIMEOUT_S` has passed, treat it as a timeout even if a result is sitting there. I didn't make it here, because the unit allows one improvement and I had already chosen it (see What's Still Broken).
+
+**Why the "before" run passed:** it was luck, not a sign that the code was right. The bug was already there; that run just didn't overlap a sleep. Three earlier attempts at the "after" run were cut short by the same thing, and I'm recording them rather than leaving them out:
+1. **Attempt 1**, trial 2: a service took more than 180 s to start, and the runner gave up.
+2. **Attempt 2**, trial 2: the same soft-deadline miss on a smaller scale. A request finished at 18:57:27 after 33.7 s and was logged `ai`; the laptop had slept from 18:57:20 to 18:57:26. In trial 3, a request then got no answer for over 120 s, and the runner crashed.
+3. **Attempt 3**, trial 3: a service never finished starting in 300 s.
+
+Between attempts I changed only the test runner, never the service. It now records a request with no answer as a miss instead of crashing, waits 300 s for a service to start and saves the service's output if it doesn't, marks a criterion "not run" instead of discarding the whole run, and loads the model offline (`HF_HUB_OFFLINE=1`). I first blamed the start-up stalls on the model loader checking huggingface.co over the network. Given the sleep evidence, sleep is the more likely cause. Loading offline is still harmless and faster (6.8 s against 17.3 s).
+
+### Were my targets too low?
+
+Before the improvement, all five were met, so I should say this honestly: **criterion 2 was set too low.** "0 of 10 labelled AI" passed even though 2 of the 10 texts — Spanish and French — slipped straight past the readability check and got a style score from measures tuned on English. Spanish stayed out of the AI band only because its two signals disagreed (0.19 against 0.64) and the disagreement rule set it to 0.5. French landed at 0.397, just 0.047 above the "human" line. The criterion measured the outcome, and the outcome was right by luck. **I'd tighten it to: "10 of 10 are caught by the readability check (`degraded: true`, style marked as failed)"**, which was 8/10 before.
+
+Criteria 1 and 4 also match what the Milestone 2 failure drill had already passed, so in that sense they were safe ones. But criterion 1 is the one that turned out to fail, so the repetition was worth it.
+
+### The improvement: the readability check now checks the language, not just the alphabet
+
+**Aimed at:** the diagnosis above. `stylometry.py::check_measurable` refused text in other alphabets, such as Korean or Russian, but it tested the *alphabet*, not the *language*. Spanish and French use English letters, so they passed.
+
+**The change:** `check_measurable` now also refuses text where fewer than 12% of the words are very common English words ("the", "and", "is", "I", …). Across every English text in `scenarios.py` and the attack set — my own writing, formal AI text, evasion and prompt-injection attacks — those words made up 25%–53%. Spanish was 0% and French 3%, so 12% leaves a wide margin on both sides. I left out words that are also common in Spanish or French ("a", "on", "me", "no", "de", "la").
+
+**Did it help? Yes, for what it was aimed at:**
+- Caught by the readability check: **8/10 → 10/10 in all three trials.** Spanish and French now come back `unsure` because the style signal refuses them, not by luck.
+- No English text was refused: 0 of 49 English texts in `scenarios.py` and the attack set. I re-ran my original unit 8 criteria with `run_eval.py` against the changed service: **0 of 90 responses changed** from before the improvement, and `/health` showed `style_unmeasurable: 0` ([results/run_2026-11-18_1435_capstone_after_language_check.md](results/run_2026-11-18_1435_capstone_after_language_check.md)).
+- **The trade:** a Spanish or French writer now gets the "we couldn't finish checking this" label instead of a normal "unsure". That's more honest — the system can't judge their style — but it means a non-English writer never gets a "human" label from this system. That fits my scope, which says non-English detection is out of scope.
+
+**What it didn't change:** criteria 1 and 3 went from MET to MISSED. That wasn't caused by the improvement, which only touches the style signal. The bad request was English text that the new check measures normally, and it failed in the model signal's timeout. The improvement didn't create the timeout bug; repeating the test long enough is what exposed it.
