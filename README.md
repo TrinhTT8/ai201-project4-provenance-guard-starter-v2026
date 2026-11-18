@@ -882,3 +882,245 @@ Every request that reaches `/submit` or `/appeal` writes one JSON line to `logs/
 **How I measured it:** with the service running locally (Windows laptop, CPU only, `gpt2`), `python measure_cost.py` sent my ten own-writing texts from `scenarios.py` to `/submit` one at a time, timed each round trip, and read `duration_ms`, `cpu_ms` and `model_ms` back from that run's log entry via `GET /log`. Requests ran one at a time so `cpu_ms` (process CPU time, which counts every core) belongs to that request alone. CPU time is about 4× wall-clock because PyTorch spreads the model across several cores. The mean is pulled up by the first run (2.1 s), which was the model's first inference after loading; the median is the typical run. Full table: [results/cost_2026-11-18_0045.md](results/cost_2026-11-18_0045.md).
 
 **One-off cost:** loading the model into a fresh process took **17.3 s**, paid once each time the service starts, not per run.
+
+## Run Log — Capstone
+
+Five capstone criteria from `criteria.md`, three trials each, nothing changed in between. Produced by `run_capstone_eval.py::main`, which starts the real service (`python app.py`) for each part with the fault switches that part needs (`faults.py`), sends HTTP requests, and reads the answers back out of `logs/audit.jsonl`. Full output: [results/capstone_run_2026-11-18_1112_before.md](results/capstone_run_2026-11-18_1112_before.md).
+
+| Criterion | Target | Run 1 | Run 2 | Run 3 | Verdict |
+|---|---|---|---|---|---|
+| 1. Broken signal never accuses | 15/15 unsure+degraded, 0 ai/human | 15/15 unsure+degraded, 0 ai/human | 15/15 unsure+degraded, 0 ai/human | 15/15 unsure+degraded, 0 ai/human | **MET** |
+| 2. Unreadable text never labelled AI | 0 of 10 labelled AI | 0/10 AI | 0/10 AI | 0/10 AI | **MET** |
+| 3. Hung model still answers in time | 5/5 within 32 s, unsure, no 500 | 5/5 in time (max 30.1s) | 5/5 in time (max 30.1s) | 5/5 in time (max 30.1s) | **MET** |
+| 4. Appeal never falsely confirmed | down: 0/5 'recorded' + 5/5 503; flaky: 5/5 once | down: 0/5 'recorded', 5/5 503 · flaky: 5/5 once | down: 0/5 'recorded', 5/5 503 · flaky: 5/5 once | down: 0/5 'recorded', 5/5 503 · flaky: 5/5 once | **MET** |
+| 5. Every run leaves a trace | 20/20 logged with timestamp, route, duration_ms | 20/20 logged | 20/20 logged | 20/20 logged | **MET** |
+
+**Were the trials really re-run?** Yes — each trial started the service fresh, every request has its own `request_id`, and the three trials are about four minutes apart in the log. The model scores are identical across trials (Korean 0.9543 every time, for example) because GPT-2 running on CPU gives exactly the same numbers for the same text; the trial-to-trial difference in this system is timing, not scores.
+
+### What came back (trial 1)
+
+**1. A broken signal never accuses** — `app.py::submit`, via `app.py::_run_model_signal` and `app.py::_run_style_signal`. One response per fault, then all 15 as (fault, status, guess, degraded, failed_signals):
+
+```json
+{
+  "model_timeout": {
+    "status": 200,
+    "seconds": 30.04,
+    "response": {
+      "confidence": 0.5,
+      "content_id": "118eb164-a291-46e6-bd54-ae7c31fddf98",
+      "degraded": true,
+      "failed_signals": [
+        "model"
+      ],
+      "guess": "unsure",
+      "label": "We couldn't finish checking this text: one of our checks didn't work t…",
+      "model_score": null,
+      "style_score": 0.6688
+    }
+  },
+  "model_crash": {
+    "status": 200,
+    "seconds": 0.03,
+    "response": {
+      "confidence": 0.5,
+      "content_id": "be0f3a41-ce8f-497b-87a7-8c67155eca9d",
+      "degraded": true,
+      "failed_signals": [
+        "model"
+      ],
+      "guess": "unsure",
+      "label": "We couldn't finish checking this text: one of our checks didn't work t…",
+      "model_score": null,
+      "style_score": 0.6688
+    }
+  },
+  "style_crash": {
+    "status": 200,
+    "seconds": 0.44,
+    "response": {
+      "confidence": 0.5,
+      "content_id": "55f4418a-f46e-4891-a10a-221a8fb1c375",
+      "degraded": true,
+      "failed_signals": [
+        "style"
+      ],
+      "guess": "unsure",
+      "label": "We couldn't finish checking this text: one of our checks didn't work t…",
+      "model_score": 0.8864,
+      "style_score": null
+    }
+  }
+}
+```
+
+```json
+[
+  ["model_timeout", 200, "unsure", true, ["model"]],
+  ["model_timeout", 200, "unsure", true, ["model"]],
+  ["model_timeout", 200, "unsure", true, ["model"]],
+  ["model_timeout", 200, "unsure", true, ["model"]],
+  ["model_timeout", 200, "unsure", true, ["model"]],
+  ["model_crash", 200, "unsure", true, ["model"]],
+  ["model_crash", 200, "unsure", true, ["model"]],
+  ["model_crash", 200, "unsure", true, ["model"]],
+  ["model_crash", 200, "unsure", true, ["model"]],
+  ["model_crash", 200, "unsure", true, ["model"]],
+  ["style_crash", 200, "unsure", true, ["style"]],
+  ["style_crash", 200, "unsure", true, ["style"]],
+  ["style_crash", 200, "unsure", true, ["style"]],
+  ["style_crash", 200, "unsure", true, ["style"]],
+  ["style_crash", 200, "unsure", true, ["style"]]
+]
+```
+
+**2. Unreadable text is never labelled AI** — `app.py::submit` and `stylometry.py::check_measurable`. Every text came back `unsure`. Eight were caught by the readability check (`failed_signals: ["style"]`); Spanish and French were not — they were scored normally, and only the disagreement rule (Spanish, signals 0.19 vs 0.64) or the score itself (French, 0.397) kept them out of the AI band:
+
+```json
+[
+  {"text": "korean", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.9543, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "chinese", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.6004, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "russian", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.923, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "arabic", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.8859, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "vietnamese", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.5662, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "spanish", "status": 200, "guess": "unsure", "degraded": false, "failed_signals": [], "model_score": 0.1885, "style_score": 0.6399, "confidence": 0.5, "error": null},
+  {"text": "french", "status": 200, "guess": "unsure", "degraded": false, "failed_signals": [], "model_score": 0.3591, "style_score": 0.4343, "confidence": 0.3967, "error": null},
+  {"text": "emoji_only", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.9797, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "korean_english_mix", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.9184, "style_score": null, "confidence": 0.5, "error": null},
+  {"text": "short_english", "status": 200, "guess": "unsure", "degraded": true, "failed_signals": ["style"], "model_score": 0.4927, "style_score": null, "confidence": 0.5, "error": null}
+]
+```
+
+**3. A hung model still answers in time** — `app.py::_run_model_signal`, with the real 30-second timeout:
+
+```json
+{
+  "seconds": [
+    30.04,
+    30.05,
+    30.04,
+    30.05,
+    30.07
+  ],
+  "statuses": [
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "guesses": [
+    "unsure",
+    "unsure",
+    "unsure",
+    "unsure",
+    "unsure"
+  ],
+  "failed_signals": [
+    [
+      "model"
+    ],
+    [
+      "model"
+    ],
+    [
+      "model"
+    ],
+    [
+      "model"
+    ],
+    [
+      "model"
+    ]
+  ]
+}
+```
+
+**4. An appeal is never falsely confirmed** — `app.py::appeal` and `audit.py::_append`. With the log down, the writer is told the appeal was not recorded and nothing is written; with the log failing twice, each appeal is written once, on the third attempt:
+
+```json
+{
+  "log_down responses": [
+    {
+      "status": 503,
+      "content_id": "b22df542-e771-4d39-ab0c-c5edd0ec9dec",
+      "error": "appeal_not_recorded",
+      "message": "We couldn't save your appeal, so it has NOT been recorded yet. Please …"
+    },
+    {
+      "status": 503,
+      "content_id": "fe52af04-8552-4f50-b8d1-2f6de1b8a4b1",
+      "error": "appeal_not_recorded",
+      "message": "We couldn't save your appeal, so it has NOT been recorded yet. Please …"
+    }
+  ],
+  "log_down appeal records written": 0,
+  "log_flaky responses (status)": [
+    200,
+    200,
+    200,
+    200,
+    200
+  ],
+  "log_flaky records per appeal": [
+    1,
+    1,
+    1,
+    1,
+    1
+  ]
+}
+```
+
+```json
+[
+  {
+    "timestamp": "2026-11-18T17:04:51+00:00",
+    "content_id": "9c0a741a-f79a-4ff2-88bc-363a5e4b8a2d",
+    "creator_id": "cap_3366f6b602",
+    "event": "appeal",
+    "status": "under_review",
+    "reasoning": "I wrote this myself.",
+    "degraded_decision": false,
+    "request_id": "bcc12cf825d0",
+    "route": "/appeal",
+    "duration_ms": 7.4,
+    "cpu_ms": 15.6,
+    "write_attempts": 3
+  }
+]
+```
+
+**5. Every run leaves a trace** — `audit.py::_append`, with the run fields from `app.py::_run_fields`. All 20 requests, then one log entry of each kind:
+
+```json
+[
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "submission", "status": 200, "entries found": 1, "complete": true},
+  {"request": "bad input: empty text", "status": 400, "entries found": 1, "complete": true},
+  {"request": "bad input: no text field", "status": 400, "entries found": 1, "complete": true},
+  {"request": "bad input: too short", "status": 400, "entries found": 1, "complete": true},
+  {"request": "bad input: over 1000 words", "status": 400, "entries found": 1, "complete": true},
+  {"request": "bad input: not JSON", "status": 400, "entries found": 1, "complete": true},
+  {"request": "appeal", "status": 200, "entries found": 1, "complete": true},
+  {"request": "appeal", "status": 200, "entries found": 1, "complete": true},
+  {"request": "appeal", "status": 200, "entries found": 1, "complete": true},
+  {"request": "repeat appeal", "status": 409, "entries found": 1, "complete": true},
+  {"request": "repeat appeal", "status": 409, "entries found": 1, "complete": true}
+]
+```
+
+```jsonl
+{"timestamp": "2026-11-18T17:05:04+00:00", "content_id": "f4c79b11-b50c-415f-8d10-73d72c7ce362", "creator_id": "cap_5a6bb387aa", "guess": "unsure", "model_score": 0.8123, "style_score": 0.4166, "combined_score": 0.5, "label": "We couldn't tell whether this was written by a person or with help from AI. This is not an accusation. Our checks gave mixed results, and your work has not been marked as AI-written. If you'd like, you can appeal and tell us how you wrote it, and a person will review it.", "status": "decided", "degraded": false, "failed_signals": null, "input_words": 74, "input_chars": 403, "input_preview": "This is a sentence, just a sentence. You know how sentences ", "model_ms": 156.8, "style_ms": 0.4, "request_id": "d620fd93ba5b", "route": "/submit", "duration_ms": 158.2, "cpu_ms": 1671.9}
+{"timestamp": "2026-11-18T17:05:04+00:00", "creator_id": "unknown", "event": "rejected", "status": "rejected", "reason": "missing_text", "request_id": "9cb3667a3780", "route": "/submit", "duration_ms": 0.7, "cpu_ms": 0.0, "input_type": "NoneType"}
+{"timestamp": "2026-11-18T17:05:05+00:00", "content_id": "018cb557-f588-4f95-96b0-42fb2bff958d", "creator_id": "cap_e1e54d0505", "event": "appeal", "status": "under_review", "reasoning": "I wrote this myself.", "degraded_decision": false, "request_id": "5e5a2336789b", "route": "/appeal", "duration_ms": 15.7, "cpu_ms": 140.6}
+{"timestamp": "2026-11-18T17:05:05+00:00", "creator_id": "cap_a32d94b604", "event": "rejected", "status": "rejected", "reason": "duplicate_appeal", "request_id": "1a96cade063f", "route": "/appeal", "duration_ms": 15.5, "cpu_ms": 187.5, "attempted_content_id": "1eb743e8-834d-4a85-a250-0b3da8d25338"}
+```
