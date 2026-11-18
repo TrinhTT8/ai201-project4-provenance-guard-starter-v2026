@@ -8,6 +8,109 @@ assumed — the starter ships one that already answers.
 
 ---
 
+## Run it — capstone (local, with logs)
+
+**Where it runs:** on your own machine. This is Path B (local with logs), not a
+hosted URL — the model alone needs more memory than a free host gives
+(the arithmetic is in [This project will not fit a free host](#this-project-will-not-fit-a-free-host)).
+
+**What the machine needs**
+
+| | |
+|---|---|
+| Python | **3.11, 3.12 or 3.13**. Not 3.14 — the pinned `torch` doesn't support it |
+| Disk | ~9 GB free: `torch` is most of it, the `gpt2` model is ~550 MB |
+| Memory | 4 GB RAM or more |
+| Network | Only for the first setup: `pip install` and the one-time model download |
+| Accounts / keys | **None.** Nothing calls a hosted service |
+| Git | To clone the repo |
+
+**From nothing to a running service** — Windows PowerShell on the left of each
+pair, macOS / Linux / Git Bash on the right where they differ:
+
+```bash
+git clone https://github.com/TrinhTT8/ai201-project4-provenance-guard-starter-v2026.git
+cd ai201-project4-provenance-guard-starter-v2026
+
+python -m venv .venv                 # macOS/Linux: python3 -m venv .venv
+.venv\Scripts\Activate.ps1           # macOS/Linux/Git Bash: source .venv/bin/activate
+                                     # Git Bash on Windows: source .venv/Scripts/activate
+pip install -r requirements.txt      # several minutes: torch is large
+
+python test.py                       # must end with no [FAIL]; a model [WARN] is fine
+python detector.py                   # one-time ~550 MB model download, then scores a sample
+
+python app.py                        # starts the service on http://127.0.0.1:5000
+```
+
+> If PowerShell refuses to run `Activate.ps1` ("running scripts is disabled"),
+> run `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once, then activate
+> again.
+
+> **Windows: clone into a short folder** such as `C:\Users\you\code\`. `torch`
+> installs `sympy`, whose deepest files sit ~130 characters below the repo
+> folder. Clone somewhere deep and `pip install` stops with `OSError: [Errno 2]
+> No such file or directory … sympy\parsing\autolev\test-examples…` and a hint
+> about long paths — Windows' 260-character path limit. Either move the clone
+> somewhere shorter, or enable long paths once (admin PowerShell:
+> `New-ItemProperty -Path HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force`)
+> and run `pip install -r requirements.txt` again. Found by following these
+> steps in a fresh clone.
+
+`python app.py` loads the model in the background. **Wait for the line
+`gpt2 loaded and ready.`** before sending text — until then a submission can
+hit the 30-second model timeout and come back "unsure" with
+`failed_signals: ["model"]`, by design.
+
+**Check it's working** — in a second terminal (PowerShell: `curl.exe`, one line):
+
+```bash
+curl http://127.0.0.1:5000/health
+# → "ok": true, "detector_loaded": true, "faults_active": []
+
+curl -X POST http://127.0.0.1:5000/submit -H "Content-Type: application/json" \
+  -d '{"text": "I took the long way home because the bridge was closed again, and the detour went past the bakery that sells the lemon bars my sister likes.", "creator_id": "me"}'
+# → content_id, guess, confidence, label, model_score, style_score, degraded
+
+curl "http://127.0.0.1:5000/log?limit=3"     # the run you just made, as a log entry
+```
+
+Stop the service with **Ctrl+C**.
+
+### What it records
+
+Every request that reaches `/submit` or `/appeal` writes one JSON line to
+**`logs/audit.jsonl`** — including the ones that fail. Read it with
+`GET /log?limit=N` or open the file.
+
+| Field | On | What it is |
+|---|---|---|
+| `timestamp`, `request_id`, `route` | every entry | When, which request, which endpoint |
+| `duration_ms` | every entry | Wall-clock time the request took inside the service |
+| `cpu_ms` | every entry | CPU time the service used during it (exact when requests run one at a time) |
+| `input_words`, `input_chars`, `input_preview` | `/submit` entries | What was sent — length and the first 60 characters, not the full text |
+| `model_score`, `style_score`, `combined_score`, `guess`, `label` | decisions | What it decided |
+| `model_ms`, `style_ms` | decisions, late failures | How long each signal took |
+| `degraded`, `failed_signals` | decisions | Whether a signal failed, which one, and why |
+| `status` | every entry | `decided`, `under_review` (appealed) or `rejected` |
+| `reason`, `error` | rejections | Why it was refused: `missing_text`, `text_too_short`, `rate_limited`, `scoring_unavailable`, `unknown_content_id`, `duplicate_appeal`, `internal_error`… |
+| `write_attempts` | any entry | Present only if the write needed a retry |
+
+`GET /health` adds the running totals since the service started:
+`signal_failures` (timeouts, crashes, unreadable text) and `audit_writes`
+(writes, retries, failures).
+
+### Measuring, and breaking it on purpose
+
+| Command | What it does |
+|---|---|
+| `python measure_cost.py` | With the service running: 10 timed submissions, writes `results/cost_<date>.md` |
+| `python run_failures.py` | No service needed: switches each failure on in-process, 12 scenarios × 5 trials, writes `results/failure_drill_<date>.md`. Uses its own log, `logs/failure_drill.jsonl` |
+| `AI201_FAULTS=model_crash python app.py` | Runs the real service with a failure switched on (PowerShell: `$env:AI201_FAULTS="model_crash"; python app.py`). Faults: `model_timeout`, `model_crash`, `style_crash`, `log_flaky`, `log_down`. `/health` lists any that are on |
+| `AI201_MODEL_TIMEOUT=10 python app.py` | Change the model timeout (default 30 s) |
+
+---
+
 ## Before your first class
 
 ```bash

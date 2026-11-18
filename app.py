@@ -31,7 +31,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
 
-from flask import Flask, jsonify, request
+from flask import Flask, g, jsonify, request
+from werkzeug.exceptions import HTTPException
 
 import audit
 import config
@@ -40,6 +41,51 @@ import scoring
 import stylometry
 
 app = Flask(__name__)
+
+
+# ── Structured logging: what every log entry knows about its run (unit 9) ────
+# Every entry a request writes — decision, appeal, rejection, crash — carries
+# the same run fields, so one request can be followed through the log and its
+# cost read straight off it.
+
+@app.before_request
+def _start_clock():
+    g.t0 = time.perf_counter()
+    g.cpu0 = time.process_time()
+    g.request_id = uuid.uuid4().hex[:12]
+
+
+def _run_fields() -> dict:
+    """
+    request_id, route, and the cost of the request so far:
+
+      duration_ms   wall-clock time — what the writer waits
+      cpu_ms        CPU time the whole process used meanwhile — what the
+                    machine pays. GPT-2 runs on several cores, so this is
+                    usually MORE than duration_ms. It's process-wide, so it
+                    is only exact when requests run one at a time, which is
+                    how the cost measurement runs them.
+    """
+    t0 = getattr(g, "t0", None)     # missing if the rate limiter refused first
+    cpu0 = getattr(g, "cpu0", None)
+    return {
+        "request_id": getattr(g, "request_id", None),
+        "route": request.path,
+        "duration_ms": round((time.perf_counter() - t0) * 1000, 1) if t0 else None,
+        "cpu_ms": round((time.process_time() - cpu0) * 1000, 1) if cpu0 is not None else None,
+    }
+
+
+def _input_fields(text) -> dict:
+    """
+    What was submitted, without storing the whole text: this log is committed
+    to a public repo, and a writer's full essay doesn't belong in it. Length
+    and an opening preview are enough to recognise an entry later.
+    """
+    if not isinstance(text, str):
+        return {"input_type": type(text).__name__}
+    return {"input_words": len(text.split()), "input_chars": len(text),
+            "input_preview": text[:60]}
 
 
 # ── Rate limiting — UNIT 8 ────────────────────────────────────────────────────
@@ -277,6 +323,8 @@ def submit():
     creator_id = payload.get("creator_id")
     if not isinstance(creator_id, str) or not creator_id.strip():
         creator_id = "unknown"
+    # Every entry this request writes — decision or rejection — records it.
+    g.input_fields = _input_fields(text)
 
     # ── Bad input gets a 400, never a crash (criterion 5) ────────────────────
     if not isinstance(text, str) or not text.strip():
@@ -285,11 +333,17 @@ def submit():
         return _reject(creator_id, "text_too_long", f"Text is over {MAX_WORDS} words.")
 
     # ── Both signals, each behind a wrapper that can't throw (path B) ────────
+    t_model = time.perf_counter()
     try:
         model_score, model_failure = _run_model_signal(text)
     except ValueError:
         return _reject(creator_id, "text_too_short", "Text is too short to score — a few sentences at least.")
+    t_style = time.perf_counter()
     style_score, style_failure = _run_style_signal(text)
+    t_done = time.perf_counter()
+    # Where the time went — the model is the real compute cost of a run.
+    g.signal_ms = {"model_ms": round((t_style - t_model) * 1000, 1),
+                   "style_ms": round((t_done - t_style) * 1000, 1)}
     failed_signals = {name: why for name, why in
                       (("model", model_failure), ("style", style_failure)) if why}
 
@@ -326,6 +380,9 @@ def submit():
             label=label,
             degraded=bool(failed_signals),
             failed_signals=failed_signals or None,
+            **g.input_fields,
+            **g.signal_ms,
+            **_run_fields(),
         )
     except audit.AuditWriteError as exc:
         print(f"[submit] decision NOT recorded for {creator_id}: {exc}", file=sys.stderr)
@@ -361,11 +418,33 @@ def _log_rejection_safely(**fields):
     A rejection's trace, best effort. If the log itself is down, the writer
     still gets their clear 4xx/5xx — not a 500 from a failed write — and the
     lost trace goes to stderr so it isn't silent.
+
+    Adds the run fields, whatever the request had of its input, and how long
+    each signal took if it got that far — a failed run is still a run.
     """
+    fields = {**_run_fields(), **getattr(g, "input_fields", {}),
+              **getattr(g, "signal_ms", {}), **fields}
     try:
         audit.log_rejection(**fields)
     except audit.AuditWriteError as exc:
         print(f"[audit] rejection NOT logged {fields}: {exc}", file=sys.stderr)
+
+
+@app.errorhandler(Exception)
+def _unexpected_error(exc):
+    """
+    Anything nothing else caught. Without this a crash is a bare 500 and an
+    empty space in the log — a failure that shows up only as an absence.
+    HTTP errors (404, 405, the 429 above) pass through untouched.
+    """
+    if isinstance(exc, HTTPException):
+        return exc
+    print(f"[error] {request.path}: {type(exc).__name__}: {exc}", file=sys.stderr)
+    _log_rejection_safely(creator_id="unknown", reason="internal_error",
+                          error=f"{type(exc).__name__}: {exc}")
+    return jsonify({"error": "internal_error",
+                    "message": "Something went wrong on our side. Nothing was decided "
+                               "about your text."}), 500
 
 
 # Check-then-write for one appeal must not interleave with another, or two
@@ -452,6 +531,7 @@ def appeal():
                 creator_id=original.get("creator_id", "unknown"),
                 reasoning=reasoning.strip(),
                 degraded_decision=degraded,
+                **_run_fields(),
             )
         except audit.AuditWriteError as exc:
             print(f"[appeal] NOT recorded for {content_id}: {exc}", file=sys.stderr)
@@ -507,7 +587,9 @@ def main():
     def warm():
         import detector
         try:
-            print(f"  {detector.warm_up()}")
+            # flush: RUNNING.md says "wait for this line", so it must appear
+            # even when output is piped or logged, not only in a terminal.
+            print(f"  {detector.warm_up()}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"  ⚠️  model warm-up failed: {exc}", file=sys.stderr)
 
