@@ -883,6 +883,11 @@ Every request that reaches `/submit` or `/appeal` writes one JSON line to `logs/
 
 **One-off cost:** loading the model into a fresh process took **17.3 s**, paid once each time the service starts, not per run.
 
+**For a hundred people a day:** if each of 100 writers submits one piece a day, that's 100 × 2.78 CPU-s = **278 CPU-seconds (about 4.6 CPU-minutes) of compute a day**, and 100 × 0.68 s = **68 seconds** of the service actually working — 68 / 86,400 = **0.08% of the day**. Add one model load, 17.3 s, each time the service starts. Appeals don't change the total: they never touch the model, and took about 20 ms each in the run log.
+
+So the compute per run is almost free. What actually costs money is **keeping a machine on all day with enough memory to hold the model**: `torch` plus `gpt2` won't fit in a 512 MB free tier (see Where It Runs). On my laptop that costs nothing extra — but Milestone 6 showed the catch: the laptop has to stay awake, or requests freeze while it sleeps.
+
+
 ## Run Log — Capstone
 
 Five capstone criteria from `criteria.md`, three trials each, nothing changed in between. Produced by `run_capstone_eval.py::main`, which starts the real service (`python app.py`) for each part with the fault switches that part needs (`faults.py`), sends HTTP requests, and reads the answers back out of `logs/audit.jsonl`. Full output: [results/capstone_run_2026-11-18_1112_before.md](results/capstone_run_2026-11-18_1112_before.md).
@@ -1186,3 +1191,45 @@ Criteria 1 and 4 also match what the Milestone 2 failure drill had already passe
 - **The trade:** a Spanish or French writer now gets the "we couldn't finish checking this" label instead of a normal "unsure". That's more honest — the system can't judge their style — but it means a non-English writer never gets a "human" label from this system. That fits my scope, which says non-English detection is out of scope.
 
 **What it didn't change:** criteria 1 and 3 went from MET to MISSED. That wasn't caused by the improvement, which only touches the style signal. The bad request was English text that the new check measures normally, and it failed in the model signal's timeout. The improvement didn't create the timeout bug; repeating the test long enough is what exposed it.
+
+
+## What's Still Broken — Capstone
+
+**Criterion 1 (a broken signal never accuses) — MISSED after the improvement.** When the model is set to hang and the service is frozen mid-request, a model score that arrives late is still used, and it can label the text AI (the 413-second request logged `ai` in after-trial 2).
+- *What I'd do:* add a hard deadline in `app.py::_run_model_signal`. Record the start time with `time.perf_counter()` (it keeps counting through sleep — that's how the log measured `duration_ms: 413258.7`), and after `future.result()` returns, if more than `MODEL_SIGNAL_TIMEOUT_S` has passed, throw the score away and return `model_timeout` anyway. I'd also log that a late result was dropped, so it shows up in the log instead of as a quiet "unsure". Then I'd re-run criteria 1 and 3, three trials, with sleep turned off.
+- *Why I stopped:* the unit allows one improvement, and I had already used it on the language check before this bug showed up. The bug was there in the "before" run too; it only appeared once a test overlapped the laptop going to sleep.
+
+**Criterion 3 (a hung model still answers in time) — MISSED after the improvement.** One request took 410.8 s because the laptop running the service went to sleep (Windows Modern Standby, 20:20:06–20:27:02 UTC).
+- *What I'd do:* no code can answer while the machine is asleep, so the real fix is where it runs. For tests, turn sleep off while plugged in. For real use, run it on a machine that doesn't sleep. The code change above still matters here: it means that when the machine wakes up, the late answer is "unsure", not a verdict.
+- *Why I stopped:* it's a property of running locally (Path B), not of the service, and moving off my laptop is out of scope for this unit.
+
+**Criterion 2 passed, but its target was too low.** As written ("0 of 10 labelled AI"), it passed before the improvement even though Spanish and French slipped past the readability check. The target I'd use from now on is **"10 of 10 caught by the readability check"** — 8/10 before the improvement, 10/10 after.
+
+**Also still true, though no criterion covers it:**
+- A timed-out model call can't be killed. Python threads can't be stopped, so an abandoned call keeps running in the background and uses CPU (the requests just after a timeout show 3–8 CPU-seconds each in the log). Four worker threads means a few hung calls don't block everything, but enough of them would.
+- The readability check catches Vietnamese only because of its accented letters, not because it recognises the language (accents split its words into fragments).
+- Rate limits are still kept in memory, so a restart forgets every count.
+
+## What I'd Do Next
+
+First, I'd add the hard deadline to `_run_model_signal` and re-run criteria 1 and 3 with sleep turned off. It's the one remaining way a broken signal can still produce an accusation, which is the main promise of this whole extension, and it's a single elapsed-time check, so it's the most protection for the least code.
+
+## How I Used AI — Capstone
+
+**Moment 1**
+
+- _What I asked for:_ I asked Claude whether my first idea — having the system re-run the judge whenever someone appeals — fit shape B.
+- _What came back:_ It said not really: an appeal isn't a failure, so re-judging is a new feature (shape C), and running the same model on the same text gives the same answer anyway. It suggested two failure themes instead: "a broken signal never produces an accusation" and "an appeal is never lost".
+- _What I changed:_ I picked both themes, wrote The Shape and What's Out of Scope, and used Claude's feedback to tighten the wording.
+
+**Moment 2**
+
+- _What I asked for:_ I asked Claude to build the extension for Milestone 2.
+- _What came back:_ The code for both themes, a failure drill script, and three commits made without my review.
+- _What I changed:_ I had it delete that branch and start again on `main`, building one theme at a time. Before each commit it showed me what had changed and how it worked, and I made each commit myself after reviewing it.
+
+**Moment 4**
+
+- _What I asked for:_ I asked Claude to run the tests (Milestones 3, 5 and 6) and to help diagnose anything that missed.
+- _What came back:_ It wrote `measure_cost.py`, `run_capstone_eval.py` and the non-English test texts in `capstone_scenarios.py`, and ran everything. When the "after" run missed, it found the cause by matching the bad request against the Windows event log: my laptop had gone to sleep.
+- _What I changed:_ I decided to keep the language check as my one improvement and record the timeout fix in What's Still Broken, instead of switching improvements or making two changes.
