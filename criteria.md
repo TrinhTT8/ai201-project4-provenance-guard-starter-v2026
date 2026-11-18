@@ -124,3 +124,49 @@ If there is no given text, the system cannot predict; therefore, this criterion 
      A number you missed stays where it is, gets diagnosed, and gets a fix
      attempted. That's where the points are.
      ───────────────────────────────────────────────────────────────────────── -->
+
+---
+
+# Capstone criteria — path B, harden against failure
+
+Written before any capstone test was run. Criteria 1–4 are about the extension; criterion 5 is about the run log from Milestone 3.
+
+---
+
+## 1.
+
+When one signal is broken on purpose — the model times out, the model crashes, or the style signal crashes, 5 submissions each (15 total) — 15 out of 15 come back as `unsure` with `degraded: true`, and none of them is labelled AI or human, in every trial.
+
+**Why this target:** This is the whole point of the extension. If a broken signal produces even one "AI" label, a real writer got accused because of a bug, not because of their writing, so I don't allow any. It isn't allowed to say "human" either, because one working signal is only half the evidence, and my disagreement rule already says half the evidence isn't enough to decide.
+
+---
+
+## 2.
+
+Of 10 texts the style signal wasn't built to read — Korean, Chinese, Russian, Arabic, Vietnamese, Spanish, French, emoji only, Korean mixed with English, and one short English sentence — 0 are labelled high-confidence AI, in every trial.
+
+**Why this target:** Before the extension, a Korean paragraph was labelled high-confidence AI (combined score 0.89) only because the style signal counted it as zero words. People writing in their own language, or a second one, are exactly the writers this system is most likely to accuse, so 0 is the only fair number. My first criterion allows 1 in 10 for human writing because the signals can honestly misjudge it, but here the signal can't read the text at all, so any AI label comes from a broken measurement. I put Spanish, French and Vietnamese in on purpose: they mostly use English letters, so the readability check might still let them through, and I want to know if it does.
+
+---
+
+## 3.
+
+When the model hangs, `/submit` still answers within 32 seconds (the real 30-second timeout plus 2 seconds) in 5 out of 5 tries, and every answer is `unsure`, never a 500 error.
+
+**Why this target:** Before the extension, a hung model meant the writer waited forever with no answer. A normal run takes about 0.4–2 seconds and loading the model takes about 17, so 30 seconds is long enough that a slow-but-working model isn't cut off. I allow only 2 extra seconds because everything after the timeout (the style signal, the log write, the reply) takes milliseconds; a looser margin would hide a second slow step I don't know about.
+
+---
+
+## 4.
+
+When the audit log can't be written at all, 0 out of 5 appeals get a "recorded" message and all 5 get a 503 error. When the log fails twice and then works, 5 out of 5 appeals are recorded exactly once. In every trial.
+
+**Why this target:** A false "your appeal has been recorded" is worse than an error. The writer stops trying, and nobody ever reviews their case, so I allow 0. The retry also can't create extra copies of the appeal, because a reviewer seeing the same appeal twice can't tell if the writer appealed twice. Since the appeal is the only thing standing between a wrong accusation and nothing at all, it has to be all or nothing.
+
+---
+
+## 5.
+
+Of 20 requests sent to the running service — 10 normal submissions, 5 bad inputs (empty text, no `text` field, too short, over 1000 words, and a body that isn't JSON), 3 appeals and 2 repeat appeals — 20 out of 20 show up in `logs/audit.jsonl` with a `timestamp`, `route` and `duration_ms`, in every trial.
+
+**Why this target:** If a request isn't in the log, I can't diagnose it later, and a failure that only shows up as a missing line is one I'll never find. Bad inputs and repeat appeals are in the set on purpose, because those are the requests most likely to be skipped. I don't allow 19 out of 20, because the missing one could be an appeal, and a missing appeal is a lost appeal.
