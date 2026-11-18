@@ -27,6 +27,7 @@ import time
 from datetime import datetime, timezone
 
 import config
+import faults
 
 _lock = threading.Lock()
 
@@ -157,6 +158,9 @@ def _append(entry: dict) -> dict:
 
 def _write_line(line: str, attempt: int) -> None:
     """One attempt at one line. Flushed to disk before it counts as written."""
+    if faults.on("log_down") or (faults.on("log_flaky") and attempt < config.AUDIT_WRITE_ATTEMPTS):
+        raise OSError(f"injected fault: audit log unwritable (attempt {attempt})")
+
     config.LOG_DIR.mkdir(parents=True, exist_ok=True)
     with config.AUDIT_LOG.open("a", encoding="utf-8") as f:
         f.write(line + "\n")

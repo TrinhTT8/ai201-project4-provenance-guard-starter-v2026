@@ -26,6 +26,7 @@ Routes:
 
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeout
@@ -34,6 +35,7 @@ from flask import Flask, jsonify, request
 
 import audit
 import config
+import faults
 import scoring
 import stylometry
 
@@ -152,6 +154,7 @@ def health():
         "rate_limiting": config.RATE_LIMITING_ENABLED,
         "log_entries": len(audit.read_entries()),
         # Path B instrumentation: counts since this process started.
+        "faults_active": sorted(faults.ACTIVE),
         "signal_failures": dict(SIGNAL_STATS),
         "audit_writes": dict(audit.WRITE_STATS),
     })
@@ -172,10 +175,20 @@ SIGNAL_STATS = {"model_timeout": 0, "model_error": 0, "style_unmeasurable": 0, "
 _model_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="model-signal")
 
 
+def _model_work(text):
+    import detector
+
+    if faults.on("model_crash"):
+        raise RuntimeError("injected fault: model signal crashed")
+    if faults.on("model_timeout"):
+        time.sleep(config.MODEL_SIGNAL_TIMEOUT_S + 1)
+    return detector.model_signal(text)
+
+
 def _run_model_signal(text):
     import detector
 
-    future = _model_pool.submit(detector.model_signal, text)
+    future = _model_pool.submit(_model_work, text)
     try:
         return future.result(timeout=config.MODEL_SIGNAL_TIMEOUT_S), None
     except FutureTimeout:
@@ -193,6 +206,8 @@ def _run_model_signal(text):
 
 def _run_style_signal(text):
     try:
+        if faults.on("style_crash"):
+            raise RuntimeError("injected fault: style signal crashed")
         return stylometry.style_signal(text), None
     except stylometry.StyleUnmeasurable as exc:
         SIGNAL_STATS["style_unmeasurable"] += 1
@@ -483,6 +498,8 @@ def main():
     print(f"  rate limiting:   {'ON' if config.RATE_LIMITING_ENABLED else 'off (unit 8)'}")
     print(f"  audit log:       {config.AUDIT_LOG}")
     print(f"  model timeout:   {config.MODEL_SIGNAL_TIMEOUT_S:g}s")
+    if faults.ACTIVE:
+        print(f"  ⚠️  FAULTS ON:    {', '.join(sorted(faults.ACTIVE))}  (failure drill — not real service)")
     print()
 
     # Load the model now, in the background, so the first writer's request
